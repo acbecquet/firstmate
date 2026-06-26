@@ -552,6 +552,78 @@ test_reply_dry_run_fails_when_outbox_unwritable() {
   pass "fm-x-reply dry-run fails when it cannot record the preview"
 }
 
+test_split_thread_lib() {
+  # shellcheck source=bin/fm-x-lib.sh
+  . "$ROOT/bin/fm-x-lib.sh"
+  local out n last rejoin maxlen txt
+  # A reply that fits one tweet stays a single, UNNUMBERED chunk.
+  out=$(printf 'Aye, all shipshape.' | fmx_split_thread 280 25)
+  [ "$(printf '%s' "$out" | jq 'length')" = "1" ] || fail "short reply must be one chunk"
+  [ "$(printf '%s' "$out" | jq -r '.[0]')" = "Aye, all shipshape." ] || fail "short reply must be verbatim and unnumbered"
+  # A long reply splits on word boundaries; every chunk within the limit; lossless.
+  txt="alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november"
+  out=$(printf '%s' "$txt" | fmx_split_thread 30 25)
+  n=$(printf '%s' "$out" | jq 'length')
+  [ "$n" -gt 1 ] || fail "a long reply must split into more than one chunk"
+  maxlen=$(printf '%s' "$out" | jq 'map(length)|max')
+  [ "$maxlen" -le 30 ] || fail "every thread chunk must be within the limit (got max $maxlen)"
+  last=$(printf '%s' "$out" | jq -r '.[0]')
+  case "$last" in *" (1/$n)") : ;; *) fail "chunks must be numbered (k/n): $last" ;; esac
+  rejoin=$(printf '%s' "$out" | jq -r 'map(sub(" \\([0-9]+/[0-9]+\\)$";""))|join(" ")')
+  [ "$rejoin" = "$txt" ] || fail "thread must rejoin losslessly (got: $rejoin)"
+  # A single over-long word is hard-split so no chunk exceeds the limit.
+  out=$(printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' | fmx_split_thread 20 25)
+  [ "$(printf '%s' "$out" | jq 'map(length)|max')" -le 20 ] || fail "over-long word must hard-split within the limit"
+  # The cap bounds the thread; a truncated thread is marked with an ellipsis.
+  out=$(printf 'one two three four five six seven eight nine ten' | fmx_split_thread 20 2)
+  [ "$(printf '%s' "$out" | jq 'length')" -le 2 ] || fail "thread must respect the cap"
+  case "$(printf '%s' "$out" | jq -r '.[-1]')" in *…*) : ;; *) fail "a capped thread must mark truncation" ;; esac
+  pass "fmx_split_thread: word-boundary, within-limit, numbered, lossless, capped"
+}
+
+test_reply_single_no_texts() {
+  local home out
+  home="$TMP_ROOT/reply-single"; mkdir -p "$home"
+  out=$(FM_HOME="$home" FMX_DRY_RUN=1 "$ROOT/bin/fm-x-reply.sh" req-s "Short and sweet." 2>/dev/null)
+  [ "$out" = "req-s" ] || fail "single dry-run must echo the request_id (got: $out)"
+  jq -e 'has("texts")|not' "$home/state/x-outbox/req-s.json" >/dev/null || fail "a one-tweet reply must not include texts"
+  [ "$(jq -r '.text' "$home/state/x-outbox/req-s.json")" = "Short and sweet." ] || fail "single reply text must be verbatim and unnumbered"
+  pass "fm-x-reply keeps a concise reply as a single unnumbered tweet"
+}
+
+test_reply_thread_dry_run() {
+  local home out long
+  home="$TMP_ROOT/reply-thread"; mkdir -p "$home"
+  long="The captain has me on a sign-in redirect fix, a docs tidy, and keeping the build green while other jobs run in the background today."
+  out=$(FM_HOME="$home" FMX_DRY_RUN=1 FMX_X_REPLY_MAX_CHARS=50 \
+    "$ROOT/bin/fm-x-reply.sh" req-t "$long" 2>/dev/null)
+  [ "$out" = "req-t" ] || fail "thread dry-run must echo the request_id (got: $out)"
+  assert_present "$home/state/x-outbox/req-t.json" "thread dry-run must record the outbox preview"
+  jq -e '.texts and (.texts|length>1)' "$home/state/x-outbox/req-t.json" >/dev/null || fail "a long reply must record a texts[] thread"
+  [ "$(jq '.texts|map(length)|max' "$home/state/x-outbox/req-t.json")" -le 50 ] || fail "each thread tweet must be within the limit"
+  [ "$(jq -r '.text' "$home/state/x-outbox/req-t.json")" = "$(jq -r '.texts[0]' "$home/state/x-outbox/req-t.json")" ] || fail "text must equal the first chunk"
+  pass "fm-x-reply auto-splits a long reply into a numbered thread (texts[])"
+}
+
+test_reply_thread_live_posts_texts() {
+  local home fakebin log out data
+  home="$TMP_ROOT/reply-thread-live"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'FMX_PAIRING_TOKEN=tok-th\n' > "$home/.env"
+  # 50 is the configured minimum per-tweet budget; the text is well over it so it
+  # must split into a multi-tweet thread.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FMX_X_REPLY_MAX_CHARS=50 FAKE_CURL_LOG="$log" FAKE_ANSWER_CODE=200 \
+    "$ROOT/bin/fm-x-reply.sh" req-l "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo")
+  [ "$out" = "req-l" ] || fail "live thread must echo the request_id (got: $out)"
+  assert_grep "method=POST" "$log" "live thread must POST"
+  data=$(grep '^data=' "$log" | tail -1 | sed 's/^data=//')
+  printf '%s' "$data" | jq -e '.texts and (.texts|length>1)' >/dev/null || fail "live thread POST body must carry texts[]"
+  printf '%s' "$data" | jq -e '.text == .texts[0]' >/dev/null || fail "live thread text must equal the first chunk"
+  pass "fm-x-reply posts a thread payload (texts[]) to the relay"
+}
+
 test_poll_no_token_is_hard_noop
 test_poll_empty_env_token_overrides_env_file
 test_poll_204_is_silent
@@ -570,6 +642,10 @@ test_reply_dry_run_needs_no_token
 test_reply_dry_run_from_env_file
 test_reply_empty_env_dry_run_overrides_env_file
 test_reply_dry_run_fails_when_outbox_unwritable
+test_split_thread_lib
+test_reply_single_no_texts
+test_reply_thread_dry_run
+test_reply_thread_live_posts_texts
 test_bootstrap_activates_on_env_token
 test_bootstrap_reports_missing_x_dependency
 test_bootstrap_does_not_announce_when_arm_fails

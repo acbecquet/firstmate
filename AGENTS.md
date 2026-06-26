@@ -653,6 +653,12 @@ For each, it composes a short reply from live fleet state (`data/backlog.md` In 
 The reply is **public on a shared bot**, so the skill enforces a strict version of section 9: no task ids, internal vocabulary, captain-private material, or secrets - outcomes only.
 Because public mention text can influence the composed reply, the skill never inlines it into a shell command; it passes the reply via `bin/fm-x-reply.sh <request_id> --text-file <path>` (or stdin), not as an interpolated argument.
 
+**Length and threads.**
+The skill answers concisely by default - one tweet, two at most - and never hand-numbers a thread.
+`bin/fm-x-reply.sh` handles length: a reply that fits one tweet is posted as-is; a genuinely long reply is auto-split, premium-independently, into a numbered `(k/n)` thread on word boundaries, each tweet within `FMX_X_REPLY_MAX_CHARS` (default 280) and capped at `FMX_X_THREAD_MAX` tweets (default 25).
+A single tweet sends `{request_id, text}`; a thread additionally sends `texts` - the ordered chunks - which the relay posts as chained replies (`text` stays the first chunk so a relay that only reads `text` still posts the opener).
+This is text-only - never an image of prose.
+
 **Preview / dry-run.**
 Setting `FMX_DRY_RUN` (truthy, in the environment or `.env`) makes `bin/fm-x-reply.sh` compose and surface a reply without posting it: it records the would-be POST body `{request_id, text}` to `state/x-outbox/<request_id>.json`, prints a one-line `DRY RUN` summary to stderr, and still echoes the `request_id` and exits 0.
 Truthy means anything except unset, empty, `0`, `false`, `no`, or `off`; an explicit environment value wins over `.env`.

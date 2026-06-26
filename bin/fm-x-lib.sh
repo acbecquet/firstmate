@@ -6,8 +6,10 @@
 #
 # This file is sourced, never executed. It defines:
 #   fmx_env_get <key> <file>   - read one KEY=VALUE from a .env-style file
-#   fmx_load_config            - resolve FMX_TOKEN, FMX_RELAY, and FMX_DRY
-#                                (env wins over .env)
+#   fmx_load_config            - resolve FMX_TOKEN, FMX_RELAY, FMX_DRY, FMX_MAX,
+#                                and FMX_THREAD_MAX (env wins over .env)
+#   fmx_auth_header_file       - write the bearer header to a 0600 temp file
+#   fmx_split_thread <max> <cap> - split a reply (stdin) into a numbered thread
 # Callers must have FM_HOME set before calling fmx_load_config.
 
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
@@ -60,6 +62,55 @@ fmx_load_config() {
     ''|0|false|no|off) FMX_DRY="" ;;
     *) FMX_DRY=1 ;;
   esac
+
+  # Per-tweet character budget for thread-splitting (default 280, X non-premium),
+  # and the maximum number of tweets in one auto-split thread (anti-spam cap).
+  local maxraw threadraw
+  if [ -n "${FMX_X_REPLY_MAX_CHARS+x}" ]; then maxraw=${FMX_X_REPLY_MAX_CHARS-}; else maxraw=$(fmx_env_get FMX_X_REPLY_MAX_CHARS "$env_file"); fi
+  case "$maxraw" in ''|*[!0-9]*) maxraw=280 ;; esac
+  [ "$maxraw" -ge 50 ] 2>/dev/null || maxraw=280
+  # shellcheck disable=SC2034 # FMX_MAX is read by callers (fm-x-reply.sh) after sourcing.
+  FMX_MAX=$maxraw
+  if [ -n "${FMX_X_THREAD_MAX+x}" ]; then threadraw=${FMX_X_THREAD_MAX-}; else threadraw=$(fmx_env_get FMX_X_THREAD_MAX "$env_file"); fi
+  case "$threadraw" in ''|*[!0-9]*) threadraw=25 ;; esac
+  [ "$threadraw" -ge 1 ] 2>/dev/null || threadraw=25
+  # shellcheck disable=SC2034 # FMX_THREAD_MAX is read by callers (fm-x-reply.sh) after sourcing.
+  FMX_THREAD_MAX=$threadraw
+}
+
+# Split a reply into a numbered thread of <=<max>-codepoint chunks, packing on
+# word boundaries and hard-splitting any single over-long word. A reply that
+# already fits in one tweet is returned as a single UNNUMBERED chunk; longer
+# replies get " (k/n)" suffixes. At most <cap> tweets are produced; if the reply
+# would need more, the last kept tweet is marked with an ellipsis. Reads the
+# reply text on stdin and prints a compact JSON array of chunks. Length is
+# codepoint-based (via jq); the relay remains the final authority and trims.
+fmx_split_thread() {
+  jq -Rsc --argjson limit "$1" --argjson cap "$2" '
+    def hardsplit($b): . as $s | [range(0; ($s|length); $b) as $i | $s[$i:$i+$b]];
+    def split_thread($limit; $cap):
+      (gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "")) as $norm
+      | if ($norm | length) == 0 then []
+        elif ($norm | length) <= $limit then [$norm]
+        else
+          ($cap | tostring | length) as $digits
+          | (4 + 2 * $digits) as $suffixw
+          | (if ($limit - $suffixw - 1) < 1 then 1 else ($limit - $suffixw - 1) end) as $budget
+          | [ $norm | split(" ")[] | if (length > $budget) then hardsplit($budget)[] else . end ] as $words
+          | (reduce $words[] as $w ({chunks: [], cur: ""};
+              (if .cur == "" then $w else .cur + " " + $w end) as $cand
+              | if ($cand | length) <= $budget then .cur = $cand
+                else .chunks += [.cur] | .cur = $w end
+            )) as $st
+          | ($st.chunks + (if $st.cur != "" then [$st.cur] else [] end)) as $raw
+          | (if ($raw | length) > $cap
+              then ($raw[0:$cap] | (.[($cap - 1)] += "…"))
+              else $raw end) as $kept
+          | ($kept | length) as $n
+          | [ range(0; $n) as $i | $kept[$i] + " (\($i + 1)/\($n))" ]
+        end;
+    split_thread($limit; $cap)
+  '
 }
 
 fmx_auth_header_file() {

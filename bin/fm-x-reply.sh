@@ -10,11 +10,18 @@
 # expansion or quote-breakage could bite. fmx-respond uses them; the positional
 # <text> form is kept for back-compat and tests.
 #
-# POSTs {request_id, text} to $RELAY/connector/answer with the bearer token. The
-# relay binds the reply to the exact tweet it recorded for that request_id, so
-# this client only ever echoes the relay-issued request_id and NEVER names a
-# tweet id. On success it echoes ONLY that request_id; on a non-2xx (or transport
-# failure) it exits non-zero so the caller knows the post did not land.
+# POSTs to $RELAY/connector/answer with the bearer token. The relay binds the
+# reply to the exact tweet it recorded for that request_id, so this client only
+# ever echoes the relay-issued request_id and NEVER names a tweet id. On success
+# it echoes ONLY that request_id; on a non-2xx (or transport failure) it exits
+# non-zero so the caller knows the post did not land.
+#
+# Long replies auto-split into a numbered thread (premium-independent: each tweet
+# stays within FMX_X_REPLY_MAX_CHARS, default 280). A reply that fits in one tweet
+# sends {request_id, text}; a thread sends {request_id, text, texts:[chunk,...]}
+# where `texts` is the ordered "(k/n)" chunks for the relay to post as chained
+# replies, and `text` is the first chunk so a relay that only reads `text` still
+# posts the opener. At most FMX_X_THREAD_MAX tweets (default 25) are produced.
 #
 # Live post config (home .env or env): FMX_PAIRING_TOKEN (required),
 # FMX_RELAY_URL (default https://myfirstmate.io). Auth: Authorization: Bearer
@@ -69,12 +76,29 @@ case "$REQ" in
 esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-x-reply: jq not found" >&2; exit 1; }
-# Build the body with jq so the text is correctly JSON-escaped. This is exactly
-# what would be POSTed (and, in dry-run, exactly what we record/preview).
-PAYLOAD=$(jq -nc --arg rid "$REQ" --arg text "$TEXT" '{request_id:$rid, text:$text}') || {
-  echo "fm-x-reply: failed to build request payload" >&2
+
+# Auto-split a long reply into a numbered thread (premium-independent: each tweet
+# stays within the per-tweet budget). A reply that fits in one tweet stays a
+# single, unnumbered tweet.
+CHUNKS=$(printf '%s' "$TEXT" | fmx_split_thread "$FMX_MAX" "$FMX_THREAD_MAX") || {
+  echo "fm-x-reply: failed to split reply into a thread" >&2
   exit 1
 }
+N=$(printf '%s' "$CHUNKS" | jq 'length' 2>/dev/null) || N=
+case "$N" in ''|*[!0-9]*) echo "fm-x-reply: failed to split reply into a thread" >&2; exit 1 ;; esac
+
+# Build the body with jq so the text is correctly JSON-escaped. This is exactly
+# what would be POSTed (and, in dry-run, exactly what we record/preview). A
+# single tweet sends {request_id, text}; a thread also sends {texts: [...]} (the
+# ordered chunks) for the relay to post as chained replies, keeping `text` as the
+# first chunk so a relay that only understands `text` still posts the opener.
+if [ "$N" -le 1 ]; then
+  PAYLOAD=$(printf '%s' "$CHUNKS" | jq -c --arg rid "$REQ" '{request_id:$rid, text:(.[0] // "")}') || {
+    echo "fm-x-reply: failed to build request payload" >&2; exit 1; }
+else
+  PAYLOAD=$(printf '%s' "$CHUNKS" | jq -c --arg rid "$REQ" '{request_id:$rid, text:.[0], texts:.}') || {
+    echo "fm-x-reply: failed to build request payload" >&2; exit 1; }
+fi
 
 # Preview / dry-run: surface what we WOULD post and stop, without auth or network.
 if [ -n "$FMX_DRY" ]; then
@@ -88,8 +112,14 @@ if [ -n "$FMX_DRY" ]; then
     echo "fm-x-reply: cannot write dry-run outbox: $outbox_file" >&2
     exit 1
   }
-  printf 'fm-x-reply: DRY RUN - would POST to %s/connector/answer%s: %s\n' \
-    "$FMX_RELAY" " (recorded: state/x-outbox/$REQ.json)" "$TEXT" >&2
+  if [ "$N" -le 1 ]; then
+    printf 'fm-x-reply: DRY RUN - would POST to %s/connector/answer (recorded: state/x-outbox/%s.json): %s\n' \
+      "$FMX_RELAY" "$REQ" "$(printf '%s' "$CHUNKS" | jq -r '.[0]')" >&2
+  else
+    printf 'fm-x-reply: DRY RUN - would POST a %s-tweet thread to %s/connector/answer (recorded: state/x-outbox/%s.json):\n' \
+      "$N" "$FMX_RELAY" "$REQ" >&2
+    printf '%s' "$CHUNKS" | jq -r '.[]' | while IFS= read -r __chunk; do printf '  %s\n' "$__chunk" >&2; done
+  fi
   printf '%s\n' "$REQ"
   exit 0
 fi
