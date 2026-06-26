@@ -46,10 +46,29 @@ Launch mechanics, including the verified command templates, live in [`bin/fm-spa
 ## Toolchain
 
 On first launch the first mate detects what its required toolchain is missing or too old (tmux, node, gh, treehouse with durable lease support, no-mistakes, gh-axi, chrome-devtools-axi, lavish-axi), lists it with the exact install commands, and installs only after you say go.
+When X mode is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
 If compatible `tasks-axi` is already on `PATH`, bootstrap records it as an optional capability fact and firstmate uses its verbs for routine backlog mutations; when it is absent or incompatible, firstmate keeps hand-editing `data/backlog.md` exactly as before.
 Bootstrap also reports a `TANGLE:` line when `FM_ROOT` is on a named non-default branch; follow the printed checkout remediation rather than treating it as an installable tool problem.
 Bootstrap also runs the guarded local secondmate sync for recorded live secondmate homes.
 It emits `SECONDMATE_SYNC:` only when a home was skipped for an actionable reason, and `NUDGE_SECONDMATES:` only when a running home advanced and its instruction surface changed.
+
+## X mode (.env)
+
+X mode lets a firstmate instance answer public `@myfirstmate` mentions from live fleet state.
+It is off unless the firstmate home's gitignored `.env` contains a non-empty `FMX_PAIRING_TOKEN`.
+That token is the only required user-set value; the relay derives the tenant from it.
+`FMX_RELAY_URL` is optional and defaults to `https://myfirstmate.io`, mainly for developers pointing at a local relay.
+
+Bootstrap turns the token into local generated state.
+It writes `state/x-watch.check.sh`, a check shim that runs `bin/fm-x-poll.sh`, and `config/x-mode.env`, which exports `FM_CHECK_INTERVAL=30` for watcher arms in that home.
+When the token is removed or empty, the next bootstrap removes those artifacts.
+Steady-state off is silent and writes nothing.
+
+`bin/fm-x-poll.sh` calls `GET /connector/poll` with `Authorization: Bearer <FMX_PAIRING_TOKEN>`.
+HTTP 204 is silent.
+A pending mention with non-empty `text` is stored at `state/x-inbox/<request_id>.json` and wakes firstmate with `x-mention <request_id>`.
+Relay auth or config problems are reported once as `x-mode-error ...` until recovery.
+Replies are posted by `bin/fm-x-reply.sh`, which sends `POST /connector/answer` with `{request_id,text}`.
 
 ## Environment variables
 
@@ -65,8 +84,10 @@ FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_POLL=15              # seconds between watcher cycles
 FM_HEARTBEAT=600        # base seconds between fleet reviews; backs off exponentially while idle
 FM_HEARTBEAT_MAX=7200   # heartbeat backoff cap
-FM_CHECK_INTERVAL=300   # seconds between slow checks (merged-PR polls)
+FM_CHECK_INTERVAL=300   # seconds between slow checks (merge polls or the X-mode poll shim)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
+FMX_PAIRING_TOKEN=      # X mode pairing token; put it in .env to opt in and activate bootstrap wiring
+FMX_RELAY_URL=https://myfirstmate.io   # optional X relay override, mainly for local relay development
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_GUARD_GRACE=300      # seconds before guard warnings and arm health checks treat a watcher beacon as stale
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED
