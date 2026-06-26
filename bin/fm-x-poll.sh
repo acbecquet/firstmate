@@ -49,13 +49,15 @@ command -v curl >/dev/null 2>&1 || { emit_error_once "missing curl"; exit 0; }
 command -v jq   >/dev/null 2>&1 || { emit_error_once "missing jq"; exit 0; }
 
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-x-poll.XXXXXX") || exit 0
-trap 'rm -f "$BODY_FILE"' EXIT
+AUTH_HEADER_FILE=
+trap 'rm -f "$BODY_FILE" "$AUTH_HEADER_FILE"' EXIT
+AUTH_HEADER_FILE=$(fmx_auth_header_file) || { emit_error_once "invalid token"; exit 0; }
 
 # Short, bounded poll: a failure or timeout simply means "no wake this cycle";
 # the next check cycle retries. -m 5 keeps this well inside the watcher's
 # per-check timeout so the supervision loop is never starved.
 code=$(curl -m 5 -s -o "$BODY_FILE" -w '%{http_code}' \
-  -H "Authorization: Bearer $FMX_TOKEN" \
+  -H "@$AUTH_HEADER_FILE" \
   -H 'Accept: application/json' \
   "$FMX_RELAY/connector/poll" 2>/dev/null) || exit 0
 
@@ -80,7 +82,7 @@ TEXT=$(jq -r '.text // empty' "$BODY_FILE" 2>/dev/null) || exit 0
 # Defend the inbox filename: request_id is relay-issued (e.g. "req-7"), but never
 # trust it into a path. Reject anything outside a safe slug.
 case "$REQ" in
-  ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;;
+  ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;;
 esac
 
 INBOX="$STATE/x-inbox"

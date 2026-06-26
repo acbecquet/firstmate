@@ -40,3 +40,14 @@ fmx_load_config() {
   [ -n "$FMX_RELAY" ] || FMX_RELAY="https://myfirstmate.io"
   FMX_RELAY=${FMX_RELAY%/}
 }
+
+fmx_auth_header_file() {
+  local file
+  case "$FMX_TOKEN" in
+    *$'\n'*|*$'\r'*) return 1 ;;
+  esac
+  file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-x-auth.XXXXXX") || return 1
+  chmod 600 "$file" 2>/dev/null || { rm -f "$file"; return 1; }
+  printf 'Authorization: Bearer %s\n' "$FMX_TOKEN" > "$file" || { rm -f "$file"; return 1; }
+  printf '%s\n' "$file"
+}

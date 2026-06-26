@@ -66,10 +66,15 @@ PAYLOAD=$(jq -nc --arg rid "$REQ" --arg text "$TEXT" '{request_id:$rid, text:$te
   echo "fm-x-reply: failed to build request payload" >&2
   exit 1
 }
+AUTH_HEADER_FILE=$(fmx_auth_header_file) || {
+  echo "fm-x-reply: invalid FMX_PAIRING_TOKEN" >&2
+  exit 1
+}
+trap 'rm -f "$AUTH_HEADER_FILE"' EXIT
 
 code=$(curl -m 10 -s -o /dev/null -w '%{http_code}' \
   -X POST \
-  -H "Authorization: Bearer $FMX_TOKEN" \
+  -H "@$AUTH_HEADER_FILE" \
   -H 'Content-Type: application/json' \
   --data "$PAYLOAD" \
   "$FMX_RELAY/connector/answer" 2>/dev/null) || {

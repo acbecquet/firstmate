@@ -31,12 +31,19 @@ make_fake_curl() {
   cat > "$fakebin/curl" <<'SH'
 #!/usr/bin/env bash
 ofile="" method=GET data="" url="" auth=""
+argv=$*
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) ofile=$2; shift 2 ;;
     -X) method=$2; shift 2 ;;
     --data) data=$2; shift 2 ;;
-    -H) case "$2" in Authorization:*) auth=$2 ;; esac; shift 2 ;;
+    -H)
+      case "$2" in
+        @*) while IFS= read -r header; do case "$header" in Authorization:*) auth=$header ;; esac; done < "${2#@}" ;;
+        Authorization:*) auth=$2 ;;
+      esac
+      shift 2
+      ;;
     -m|-w) shift 2 ;;
     -s) shift ;;
     http://*|https://*) url=$1; shift ;;
@@ -44,7 +51,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ -n "${FAKE_CURL_LOG:-}" ]; then
-  { echo "method=$method"; echo "url=$url"; echo "auth=$auth"; echo "data=$data"; } >> "$FAKE_CURL_LOG"
+  { echo "argv=$argv"; echo "method=$method"; echo "url=$url"; echo "auth=$auth"; echo "data=$data"; } >> "$FAKE_CURL_LOG"
 fi
 case "$url" in
   */connector/poll)
@@ -88,6 +95,8 @@ test_poll_204_is_silent() {
   expect_code 0 "$rc" "poll 204 exit"
   [ -z "$out" ] || fail "poll 204 must be silent (got: $out)"
   assert_grep "auth=Authorization: Bearer tok-204" "$log" "poll must send the bearer token"
+  grep '^argv=' "$log" | grep -F 'tok-204' >/dev/null 2>&1 \
+    && fail "poll must not expose the bearer token in curl argv"
   assert_grep "url=https://relay.test/connector/poll" "$log" "poll must hit /connector/poll"
   ls "$home/state/x-inbox/"*.json >/dev/null 2>&1 && fail "poll 204 must not stash an inbox file"
   pass "fm-x-poll stays silent on HTTP 204 (the common case)"
@@ -149,6 +158,12 @@ test_poll_rejects_unsafe_request_id() {
   expect_code 0 "$rc" "poll unsafe id exit"
   [ -z "$out" ] || fail "poll must not emit a marker for an unsafe request_id (got: $out)"
   assert_absent "$home/state/x-inbox/../../etc/x.json" "poll must not write outside the inbox"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY='{"request_id":".hidden","text":"hi"}' \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll hidden id exit"
+  [ -z "$out" ] || fail "poll must not emit a marker for a hidden request_id (got: $out)"
+  assert_absent "$home/state/x-inbox/.hidden.json" "poll must not stash a hidden inbox file"
   pass "fm-x-poll rejects an unsafe request_id (path-traversal guard)"
 }
 
@@ -166,6 +181,8 @@ test_reply_success_posts_request_bound_only() {
   assert_grep "url=https://relay.test/connector/answer" "$log" "reply must POST /connector/answer"
   assert_grep "method=POST" "$log" "reply must use POST"
   assert_grep "auth=Authorization: Bearer tok-r" "$log" "reply must send the bearer token"
+  grep '^argv=' "$log" | grep -F 'tok-r' >/dev/null 2>&1 \
+    && fail "reply must not expose the bearer token in curl argv"
   # The body must be exactly {request_id, text} - never a tweet id.
   local data
   data=$(grep '^data=' "$log" | tail -1 | sed 's/^data=//')
