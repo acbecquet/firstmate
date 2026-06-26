@@ -36,14 +36,23 @@ fmx_env_get() {
 # composes a reply but records it instead of posting (see fm-x-reply.sh).
 fmx_load_config() {
   local env_file="${FMX_ENV_FILE:-$FM_HOME/.env}" dry
-  FMX_TOKEN="${FMX_PAIRING_TOKEN:-}"
-  [ -n "$FMX_TOKEN" ] || FMX_TOKEN=$(fmx_env_get FMX_PAIRING_TOKEN "$env_file")
-  FMX_RELAY="${FMX_RELAY_URL:-}"
-  [ -n "$FMX_RELAY" ] || FMX_RELAY=$(fmx_env_get FMX_RELAY_URL "$env_file")
+  if [ -n "${FMX_PAIRING_TOKEN+x}" ]; then
+    FMX_TOKEN=${FMX_PAIRING_TOKEN-}
+  else
+    FMX_TOKEN=$(fmx_env_get FMX_PAIRING_TOKEN "$env_file")
+  fi
+  if [ -n "${FMX_RELAY_URL+x}" ]; then
+    FMX_RELAY=${FMX_RELAY_URL-}
+  else
+    FMX_RELAY=$(fmx_env_get FMX_RELAY_URL "$env_file")
+  fi
   [ -n "$FMX_RELAY" ] || FMX_RELAY="https://myfirstmate.io"
   FMX_RELAY=${FMX_RELAY%/}
-  dry="${FMX_DRY_RUN:-}"
-  [ -n "$dry" ] || dry=$(fmx_env_get FMX_DRY_RUN "$env_file")
+  if [ -n "${FMX_DRY_RUN+x}" ]; then
+    dry=${FMX_DRY_RUN-}
+  else
+    dry=$(fmx_env_get FMX_DRY_RUN "$env_file")
+  fi
   # shellcheck disable=SC2034 # FMX_DRY is read by callers (fm-x-reply.sh) after sourcing.
   case "$(printf '%s' "$dry" | tr '[:upper:]' '[:lower:]')" in
     ''|0|false|no|off) FMX_DRY="" ;;

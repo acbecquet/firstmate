@@ -83,6 +83,22 @@ test_poll_no_token_is_hard_noop() {
   pass "fm-x-poll is a hard no-op without a token (inert default)"
 }
 
+test_poll_empty_env_token_overrides_env_file() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/poll-empty-env-token"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'FMX_PAIRING_TOKEN=tok-dotenv\n' > "$home/.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_PAIRING_TOKEN='' \
+    FAKE_CURL_LOG="$log" FAKE_POLL_CODE=204 \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll empty-env-token exit"
+  [ -z "$out" ] || fail "empty env token must disable X mode despite .env token (got: $out)"
+  [ ! -f "$log" ] || fail "empty env token must not call the relay"
+  assert_absent "$home/state/x-inbox" "empty env token must not create an inbox"
+  pass "fm-x-poll treats an explicitly empty env token as configured"
+}
+
 test_poll_204_is_silent() {
   local home fakebin log out rc
   home="$TMP_ROOT/poll-204"; mkdir -p "$home"
@@ -100,6 +116,22 @@ test_poll_204_is_silent() {
   assert_grep "url=https://relay.test/connector/poll" "$log" "poll must hit /connector/poll"
   ls "$home/state/x-inbox/"*.json >/dev/null 2>&1 && fail "poll 204 must not stash an inbox file"
   pass "fm-x-poll stays silent on HTTP 204 (the common case)"
+}
+
+test_poll_empty_env_relay_overrides_env_file() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/poll-empty-env-relay"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'FMX_PAIRING_TOKEN=tok-relay\nFMX_RELAY_URL=https://dotenv-relay.test/\n' > "$home/.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL='' \
+    FAKE_CURL_LOG="$log" FAKE_POLL_CODE=204 \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll empty-env-relay exit"
+  [ -z "$out" ] || fail "poll 204 with empty env relay must be silent (got: $out)"
+  assert_grep "url=https://myfirstmate.io/connector/poll" "$log" \
+    "empty env relay must override .env and fall back to the default relay"
+  pass "fm-x-poll lets an explicitly empty relay env override .env"
 }
 
 test_poll_auth_error_reports_once() {
@@ -491,6 +523,22 @@ test_reply_dry_run_from_env_file() {
   pass "fm-x-reply honors FMX_DRY_RUN from .env"
 }
 
+test_reply_empty_env_dry_run_overrides_env_file() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/reply-dry-empty-env"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'FMX_PAIRING_TOKEN=tok-d\nFMX_DRY_RUN=1\n' > "$home/.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FMX_DRY_RUN='' FAKE_CURL_LOG="$log" FAKE_ANSWER_CODE=200 \
+    "$ROOT/bin/fm-x-reply.sh" "req-5" "empty env disables dry run" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "dry-run empty-env override exit"
+  [ "$out" = "req-5" ] || fail "empty dry-run env override must still echo the request_id (got: $out)"
+  assert_grep "method=POST" "$log" "empty dry-run env override must post instead of previewing"
+  assert_absent "$home/state/x-outbox/req-5.json" "empty dry-run env override must not record an outbox preview"
+  pass "fm-x-reply lets an explicitly empty dry-run env override .env"
+}
+
 test_reply_dry_run_fails_when_outbox_unwritable() {
   local home err out rc
   home="$TMP_ROOT/reply-dry-unwritable"; mkdir -p "$home/state"
@@ -505,7 +553,9 @@ test_reply_dry_run_fails_when_outbox_unwritable() {
 }
 
 test_poll_no_token_is_hard_noop
+test_poll_empty_env_token_overrides_env_file
 test_poll_204_is_silent
+test_poll_empty_env_relay_overrides_env_file
 test_poll_auth_error_reports_once
 test_poll_question_stashes_and_marks
 test_poll_inbox_commit_failure_reports_error
@@ -518,6 +568,7 @@ test_reply_usage_error
 test_reply_dry_run_records_not_posts
 test_reply_dry_run_needs_no_token
 test_reply_dry_run_from_env_file
+test_reply_empty_env_dry_run_overrides_env_file
 test_reply_dry_run_fails_when_outbox_unwritable
 test_bootstrap_activates_on_env_token
 test_bootstrap_reports_missing_x_dependency
