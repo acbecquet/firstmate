@@ -179,6 +179,38 @@ test_poll_question_stashes_and_marks() {
   pass "fm-x-poll stashes the question and prints the compact marker"
 }
 
+test_poll_preserves_conversation_context() {
+  local home fakebin out rc body f
+  home="$TMP_ROOT/poll-ctx"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-c\n' > "$home/.env"
+  # A follow-up reply: the relay includes in_reply_to with the parent tweet.
+  body='{"request_id":"req-c","tweet_id":"9","author_id":"42","text":"and then what?","in_reply_to":{"author_handle":"@asker","text":"are you shipping today?"}}'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll conversation exit"
+  [ "$out" = "x-mention req-c" ] || fail "poll must mark the follow-up mention (got: $out)"
+  f="$home/state/x-inbox/req-c.json"
+  assert_present "$f" "poll must stash the follow-up"
+  [ "$(jq -r '.in_reply_to.author_handle' "$f")" = "@asker" ] \
+    || fail "inbox must preserve in_reply_to.author_handle for continuity"
+  [ "$(jq -r '.in_reply_to.text' "$f")" = "are you shipping today?" ] \
+    || fail "inbox must preserve in_reply_to.text for continuity"
+  # A fresh, standalone mention: in_reply_to is null and round-trips as null.
+  home="$TMP_ROOT/poll-ctx-fresh"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  printf 'FMX_PAIRING_TOKEN=tok-c\n' > "$home/.env"
+  body='{"request_id":"req-f","tweet_id":"10","author_id":"42","text":"what are you up to?","in_reply_to":null}'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll fresh-mention exit"
+  [ "$(jq -r '.in_reply_to' "$home/state/x-inbox/req-f.json")" = "null" ] \
+    || fail "a fresh mention must round-trip in_reply_to as null"
+  pass "fm-x-poll preserves in_reply_to conversation context in the inbox"
+}
+
 test_poll_inbox_commit_failure_reports_error() {
   local home fakebin out rc body
   home="$TMP_ROOT/poll-mv-fail"; mkdir -p "$home"
@@ -661,6 +693,7 @@ test_poll_204_is_silent
 test_poll_empty_env_relay_overrides_env_file
 test_poll_auth_error_reports_once
 test_poll_question_stashes_and_marks
+test_poll_preserves_conversation_context
 test_poll_inbox_commit_failure_reports_error
 test_poll_empty_text_is_silent
 test_poll_rejects_unsafe_request_id

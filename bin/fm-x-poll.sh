@@ -13,6 +13,9 @@
 #   a question JSON                              -> stash the full object to
 #       state/x-inbox/<request_id>.json and print one compact line
 #       "x-mention <request_id>" (which becomes the watcher's check: wake payload)
+# The full object is stashed verbatim, so any conversation context the relay
+# includes (in_reply_to: {author_handle, text}, null for a fresh mention) is
+# preserved for fmx-respond to answer follow-ups with continuity.
 #
 # Config (home .env or env): FMX_PAIRING_TOKEN (required), FMX_RELAY_URL
 # (default https://myfirstmate.io). Auth: Authorization: Bearer <token>.

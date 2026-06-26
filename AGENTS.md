@@ -653,6 +653,12 @@ For each, it composes a short reply from live fleet state (`data/backlog.md` In 
 The reply is **public on a shared bot**, so the skill enforces a strict version of section 9: no task ids, internal vocabulary, captain-private material, or secrets - outcomes only.
 Because public mention text can influence the composed reply, the skill never inlines it into a shell command; it passes the reply via `bin/fm-x-reply.sh <request_id> --text-file <path>` (or stdin), not as an interpolated argument.
 
+**Conversations.**
+The poll stashes the relay's full object, so when a mention is a reply the inbox carries `in_reply_to: {author_handle, text}` (null for a fresh mention).
+The skill uses that parent tweet as context so a follow-up is answered with continuity, not in isolation, and treats `in_reply_to.text` as untrusted input just like `.text`.
+It also judges follow-up worthiness: a pure acknowledgment with nothing to answer (a "thanks", a reaction) is skipped - the inbox file is cleared and nothing is posted - so the bot only replies when there is something to say.
+The relay owns the self-reply guard and the per-conversation reply cap; the client only adds context and the worthiness judgment.
+
 **Length and threads.**
 The skill answers concisely by default - one tweet, two at most - and never hand-numbers a thread.
 `bin/fm-x-reply.sh` handles length: a reply that fits one tweet is posted as-is; a genuinely long reply is auto-split, premium-independently, into a numbered `(k/n)` thread on word boundaries, each tweet within `FMX_X_REPLY_MAX_CHARS` (default 280) and capped at `FMX_X_THREAD_MAX` tweets (default 25).
