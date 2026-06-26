@@ -369,6 +369,56 @@ test_bootstrap_opt_out_cleanup() {
   pass "bootstrap cleans up X artifacts on opt-out and is silent once off"
 }
 
+test_reply_dry_run_records_not_posts() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/reply-dry"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'FMX_PAIRING_TOKEN=tok-d\n' > "$home/.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FMX_DRY_RUN=1 FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-x-reply.sh" "req-1" "Aye, a couple of fixes underway." 2>"$home/err"); rc=$?
+  expect_code 0 "$rc" "dry-run reply exit"
+  [ "$out" = "req-1" ] || fail "dry-run must still echo the request_id (got: $out)"
+  # It must NOT have posted: the fake curl is never invoked, so no POST is logged.
+  [ -f "$log" ] && grep -q "method=POST" "$log" && fail "dry-run must not POST to the relay"
+  assert_present "$home/state/x-outbox/req-1.json" "dry-run must record the would-be reply"
+  [ "$(jq -r .text "$home/state/x-outbox/req-1.json")" = "Aye, a couple of fixes underway." ] \
+    || fail "outbox record must hold the would-be reply text"
+  [ "$(jq -r .request_id "$home/state/x-outbox/req-1.json")" = "req-1" ] \
+    || fail "outbox record must hold the request_id"
+  assert_grep "DRY RUN" "$home/err" "dry-run must surface a DRY RUN summary on stderr"
+  pass "fm-x-reply dry-run records the would-be reply and never posts"
+}
+
+test_reply_dry_run_needs_no_token() {
+  local home out rc
+  home="$TMP_ROOT/reply-dry-notoken"; mkdir -p "$home"
+  # No token at all: dry-run still previews (it neither authenticates nor posts).
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" FMX_DRY_RUN=1 \
+    "$ROOT/bin/fm-x-reply.sh" "req-2" "preview without creds" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "dry-run no-token exit"
+  [ "$out" = "req-2" ] || fail "dry-run without a token must still echo the request_id (got: $out)"
+  assert_present "$home/state/x-outbox/req-2.json" "dry-run without a token must still record the preview"
+  pass "fm-x-reply dry-run works without a token"
+}
+
+test_reply_dry_run_from_env_file() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/reply-dry-env"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # FMX_DRY_RUN read from .env (not just the environment).
+  printf 'FMX_PAIRING_TOKEN=tok-d\nFMX_DRY_RUN=1\n' > "$home/.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_CURL_LOG="$log" "$ROOT/bin/fm-x-reply.sh" "req-3" "from dotenv" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "dry-run-from-.env exit"
+  [ "$out" = "req-3" ] || fail "dry-run from .env must echo the request_id (got: $out)"
+  [ -f "$log" ] && grep -q "method=POST" "$log" && fail "dry-run from .env must not POST"
+  assert_present "$home/state/x-outbox/req-3.json" "dry-run from .env must record the preview"
+  pass "fm-x-reply honors FMX_DRY_RUN from .env"
+}
+
 test_poll_no_token_is_hard_noop
 test_poll_204_is_silent
 test_poll_auth_error_reports_once
@@ -379,6 +429,9 @@ test_reply_success_posts_request_bound_only
 test_reply_text_file_and_stdin
 test_reply_non_2xx_fails
 test_reply_usage_error
+test_reply_dry_run_records_not_posts
+test_reply_dry_run_needs_no_token
+test_reply_dry_run_from_env_file
 test_bootstrap_activates_on_env_token
 test_bootstrap_reports_missing_x_dependency
 test_bootstrap_inert_without_token

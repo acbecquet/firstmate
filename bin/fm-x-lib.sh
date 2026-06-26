@@ -27,18 +27,28 @@ fmx_env_get() {
   printf '%s' "$val"
 }
 
-# Resolve the two X-mode settings into FMX_TOKEN and FMX_RELAY. An explicit
+# Resolve the X-mode settings into FMX_TOKEN, FMX_RELAY, and FMX_DRY. An explicit
 # environment variable always wins over the .env file; the relay URL defaults to
 # the production host so a normal user configures only the token. FMX_RELAY has
 # any trailing slash trimmed so callers can append "/connector/..." cleanly.
+# FMX_DRY is set to "1" when FMX_DRY_RUN is a truthy value (anything other than
+# unset/empty/0/false/no/off), and "" otherwise: preview mode, where the client
+# composes a reply but records it instead of posting (see fm-x-reply.sh).
 fmx_load_config() {
-  local env_file="${FMX_ENV_FILE:-$FM_HOME/.env}"
+  local env_file="${FMX_ENV_FILE:-$FM_HOME/.env}" dry
   FMX_TOKEN="${FMX_PAIRING_TOKEN:-}"
   [ -n "$FMX_TOKEN" ] || FMX_TOKEN=$(fmx_env_get FMX_PAIRING_TOKEN "$env_file")
   FMX_RELAY="${FMX_RELAY_URL:-}"
   [ -n "$FMX_RELAY" ] || FMX_RELAY=$(fmx_env_get FMX_RELAY_URL "$env_file")
   [ -n "$FMX_RELAY" ] || FMX_RELAY="https://myfirstmate.io"
   FMX_RELAY=${FMX_RELAY%/}
+  dry="${FMX_DRY_RUN:-}"
+  [ -n "$dry" ] || dry=$(fmx_env_get FMX_DRY_RUN "$env_file")
+  # shellcheck disable=SC2034 # FMX_DRY is read by callers (fm-x-reply.sh) after sourcing.
+  case "$(printf '%s' "$dry" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false|no|off) FMX_DRY="" ;;
+    *) FMX_DRY=1 ;;
+  esac
 }
 
 fmx_auth_header_file() {

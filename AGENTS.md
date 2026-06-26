@@ -651,3 +651,7 @@ Because the watcher coalesces same-key `check:` wakes, one `x-mention` wake can 
 For each, it composes a short reply from live fleet state (`data/backlog.md` In flight, current `state/*.status`, active projects) translated into outcomes, posts it with `bin/fm-x-reply.sh`, and removes that inbox file on success.
 The reply is **public on a shared bot**, so the skill enforces a strict version of section 9: no task ids, internal vocabulary, captain-private material, or secrets - outcomes only.
 Because public mention text can influence the composed reply, the skill never inlines it into a shell command; it passes the reply via `bin/fm-x-reply.sh <request_id> --text-file <path>` (or stdin), not as an interpolated argument.
+
+**Preview / dry-run.**
+Setting `FMX_DRY_RUN` (truthy, in the environment or `.env`) makes `bin/fm-x-reply.sh` compose and surface a reply without posting it: it records the would-be POST body `{request_id, text}` to `state/x-outbox/<request_id>.json`, prints a one-line `DRY RUN` summary to stderr, and still echoes the `request_id` and exits 0.
+Polling and composing are unchanged, so the full poll -> wake -> compose -> would-post loop runs end to end without a public tweet - the mode for safe end-to-end testing. Inspect `state/x-outbox/` to see exactly what would have gone out.

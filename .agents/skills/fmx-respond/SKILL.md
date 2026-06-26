@@ -67,6 +67,14 @@ This is a drain over the inbox, not a single reply. The watcher coalesces same-k
    d. **On success, remove that inbox file:** `rm -f state/x-inbox/<request_id>.json` (and your temporary reply file). This is the local idempotency guard - a cleared file is never answered twice.
    e. **On failure** (non-zero exit), leave that inbox file in place, move on to the next, and do not retry blindly. If a reply fails twice, surface it to the captain as a blocker with the relay's HTTP status; the relay posts its own offline reply if no answer lands in time, so a single miss is not a crisis.
 
+## Dry-run / preview mode
+
+When `FMX_DRY_RUN` is set (truthy, in the environment or `.env`), `bin/fm-x-reply.sh` does **not** post.
+It records the would-be reply `{request_id, text}` to `state/x-outbox/<request_id>.json`, prints a one-line `DRY RUN` summary to stderr, and still echoes the `request_id` and exits 0.
+Your procedure does not change: compose as usual and call `bin/fm-x-reply.sh ... --text-file <path>`.
+Because the call still succeeds, the loop completes normally (clear the inbox file as in step 2d); the only difference is nothing reaches X.
+This is the mode for end-to-end testing the poll -> compose -> would-post loop without a public tweet - inspect `state/x-outbox/` to see exactly what would have been posted.
+
 ## Notes
 
 - One mention = one reply, but a single wake may cover several pending mentions - drain them all.
