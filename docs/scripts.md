@@ -33,6 +33,6 @@ Each file also starts with a short header comment.
 | `fm-teardown.sh`         | Return the worktree or retire/release a secondmate home; protects ship work, requires scout reports, checks child work, and prints the backlog reminder |
 | `fm-harness.sh`          | Detect the running harness; resolve the effective crewmate harness                                                  |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                                                     |
-| `fm-x-lib.sh`            | Shared X-mode `.env` and relay config helpers sourced by the poll and reply clients                                |
+| `fm-x-lib.sh`            | Shared X-mode `.env`, relay, and dry-run config helpers sourced by the poll and reply clients                      |
 | `fm-x-poll.sh`           | Do one bounded X relay poll; without `FMX_PAIRING_TOKEN` it is silent, with a pending mention it stashes inbox JSON and prints `x-mention <request_id>` |
-| `fm-x-reply.sh`          | Post a composed public-safe X reply to the relay with `{request_id,text}`, reading text from an argument, stdin, or `--text-file` |
+| `fm-x-reply.sh`          | Post or dry-run preview a composed public-safe X reply with `{request_id,text}`, reading text from an argument, stdin, or `--text-file` |

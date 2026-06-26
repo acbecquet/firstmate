@@ -74,7 +74,8 @@ X mode is opt-in presence for the shared `@myfirstmate` bot.
 A user enables it by putting `FMX_PAIRING_TOKEN` in the firstmate home's gitignored `.env`; `FMX_RELAY_URL` is optional and defaults to `https://myfirstmate.io`.
 On bootstrap, that token creates two local artifacts: `state/x-watch.check.sh`, which performs one bounded relay poll through `bin/fm-x-poll.sh`, and `config/x-mode.env`, which sets `FM_CHECK_INTERVAL=30` for watcher arms in that home.
 Without the token, bootstrap removes those artifacts on opt-out and otherwise stays silent, so non-X users see no behavior change.
-Pending mentions are stored as `state/x-inbox/<request_id>.json`; the `fmx-respond` agent-only skill drains that inbox, composes public-safe outcome-only replies from live fleet state, and posts them with `bin/fm-x-reply.sh`.
+Pending mentions are stored as `state/x-inbox/<request_id>.json`; the `fmx-respond` agent-only skill drains that inbox, composes public-safe outcome-only replies from live fleet state, and submits them through `bin/fm-x-reply.sh`.
+For preview testing, `FMX_DRY_RUN` makes `fm-x-reply.sh` skip the public post and record the would-be `{request_id,text}` payload under `state/x-outbox/` while the rest of the poll -> compose -> would-post loop still succeeds.
 The watcher, wake queue, arm wrapper, and afk daemon are unchanged; X mode is layered on top through the existing check mechanism.
 
 ## Project memory belongs to projects

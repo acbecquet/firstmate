@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Shared config resolution for the X-mode connector client (fm-x-poll.sh and
 # fm-x-reply.sh). X mode is opt-in: a user drops a non-empty FMX_PAIRING_TOKEN
-# into the firstmate home's .env. Until then the client is a hard no-op.
+# into the firstmate home's .env. Until then polling is a hard no-op; replies can
+# still run in FMX_DRY_RUN preview mode without a token.
 #
 # This file is sourced, never executed. It defines:
 #   fmx_env_get <key> <file>   - read one KEY=VALUE from a .env-style file
-#   fmx_load_config            - resolve FMX_TOKEN and FMX_RELAY (env wins over .env)
+#   fmx_load_config            - resolve FMX_TOKEN, FMX_RELAY, and FMX_DRY
+#                                (env wins over .env)
 # Callers must have FM_HOME set before calling fmx_load_config.
 
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a

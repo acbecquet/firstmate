@@ -87,6 +87,7 @@ state/               volatile runtime signals; gitignored
   <id>.check.sh      optional slow poll you write per task (e.g. merged-PR check)
   x-watch.check.sh   generated X-mode relay poll shim; present only when opted in (section 14)
   x-inbox/           generated X-mode pending mention payloads; fmx-respond drains it (section 14)
+  x-outbox/          generated X-mode dry-run reply previews; inspect it when FMX_DRY_RUN is set (section 14)
   x-poll.error       generated X-mode relay diagnostic dedupe marker
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
@@ -610,7 +611,7 @@ These skills are not captain-invocable; they are conditional operating reference
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
 - `stuck-crewmate-recovery` - load after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, recovering, handing backlog to, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to compose and post a public-safe X reply (section 14); relevant only when X mode is on.
+- `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to compose and post or preview a public-safe X reply (section 14); relevant only when X mode is on.
 
 ## 14. X mode
 
@@ -648,10 +649,13 @@ Cadence under away-mode (the supervise daemon owns the watcher then) is a separa
 On an `x-mention <request_id>` `check:` wake, load the `fmx-respond` skill.
 On an `x-mode-error ...` `check:` wake, report it as an X-mode configuration blocker and do not load `fmx-respond`.
 Because the watcher coalesces same-key `check:` wakes, one `x-mention` wake can stand in for several pending mentions, so the skill treats `state/x-inbox/` as the source of truth and drains **every** `state/x-inbox/*.json` it finds, not just the `request_id` named in the wake.
-For each, it composes a short reply from live fleet state (`data/backlog.md` In flight, current `state/*.status`, active projects) translated into outcomes, posts it with `bin/fm-x-reply.sh`, and removes that inbox file on success.
+For each, it composes a short reply from live fleet state (`data/backlog.md` In flight, current `state/*.status`, active projects) translated into outcomes, submits it through `bin/fm-x-reply.sh`, and removes that inbox file on success.
 The reply is **public on a shared bot**, so the skill enforces a strict version of section 9: no task ids, internal vocabulary, captain-private material, or secrets - outcomes only.
 Because public mention text can influence the composed reply, the skill never inlines it into a shell command; it passes the reply via `bin/fm-x-reply.sh <request_id> --text-file <path>` (or stdin), not as an interpolated argument.
 
 **Preview / dry-run.**
 Setting `FMX_DRY_RUN` (truthy, in the environment or `.env`) makes `bin/fm-x-reply.sh` compose and surface a reply without posting it: it records the would-be POST body `{request_id, text}` to `state/x-outbox/<request_id>.json`, prints a one-line `DRY RUN` summary to stderr, and still echoes the `request_id` and exits 0.
-Polling and composing are unchanged, so the full poll -> wake -> compose -> would-post loop runs end to end without a public tweet - the mode for safe end-to-end testing. Inspect `state/x-outbox/` to see exactly what would have gone out.
+Truthy means anything except unset, empty, `0`, `false`, `no`, or `off`; an explicit environment value wins over `.env`.
+This dry-run reply path runs before token and network checks, so previewing a composed answer needs `jq` but does not need `FMX_PAIRING_TOKEN`, `curl`, or a live relay.
+Polling and composing are unchanged, so the full poll -> wake -> compose -> would-post loop runs end to end without a public tweet - the mode for safe end-to-end testing.
+Inspect `state/x-outbox/` to see exactly what would have gone out.

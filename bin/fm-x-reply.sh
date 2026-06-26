@@ -16,8 +16,9 @@
 # tweet id. On success it echoes ONLY that request_id; on a non-2xx (or transport
 # failure) it exits non-zero so the caller knows the post did not land.
 #
-# Config (home .env or env): FMX_PAIRING_TOKEN (required), FMX_RELAY_URL
-# (default https://myfirstmate.io). Auth: Authorization: Bearer <token>.
+# Live post config (home .env or env): FMX_PAIRING_TOKEN (required),
+# FMX_RELAY_URL (default https://myfirstmate.io). Auth: Authorization: Bearer
+# <token>.
 #
 # Preview / dry-run: with FMX_DRY_RUN set (truthy), the reply is NOT posted.
 # Instead the would-be POST body {request_id, text} is recorded to
