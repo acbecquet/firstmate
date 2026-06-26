@@ -63,26 +63,26 @@ code=$(curl -m 5 -s -o "$BODY_FILE" -w '%{http_code}' \
 
 # 204 (nothing pending) is the common path; only 200 can carry a question.
 case "$code" in
-  200) clear_error ;;
+  200) ;;
   204) clear_error; exit 0 ;;
   400|401|403|404) emit_error_once "relay returned HTTP $code"; exit 0 ;;
   *) exit 0 ;;
 esac
-[ -s "$BODY_FILE" ] || exit 0
+[ -s "$BODY_FILE" ] || { clear_error; exit 0; }
 
 REQ=$(jq -r '.request_id // empty' "$BODY_FILE" 2>/dev/null) || exit 0
-[ -n "$REQ" ] || exit 0
+[ -n "$REQ" ] || { clear_error; exit 0; }
 
 # A pending mention is only actionable with an actual question: require a
 # non-empty .text. An empty/absent/null question must not stash an inbox file or
 # wake fmx-respond (a public reply flow) for nothing - stay inert (exit 0).
 TEXT=$(jq -r '.text // empty' "$BODY_FILE" 2>/dev/null) || exit 0
-[ -n "$TEXT" ] || exit 0
+[ -n "$TEXT" ] || { clear_error; exit 0; }
 
 # Defend the inbox filename: request_id is relay-issued (e.g. "req-7"), but never
 # trust it into a path. Reject anything outside a safe slug.
 case "$REQ" in
-  ''|.*|*[!A-Za-z0-9._-]*) exit 0 ;;
+  ''|.*|*[!A-Za-z0-9._-]*) clear_error; exit 0 ;;
 esac
 
 INBOX="$STATE/x-inbox"
@@ -101,4 +101,5 @@ else
   exit 0
 fi
 
+clear_error
 printf 'x-mention %s\n' "$REQ"

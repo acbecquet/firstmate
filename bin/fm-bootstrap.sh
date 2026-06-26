@@ -170,12 +170,20 @@ x_mode_setup() {
   token=
   [ -f "$env_file" ] && token=$(fmx_env_get FMX_PAIRING_TOKEN "$env_file")
 
+  x_mode_remove_artifacts() {
+    rm -f "$shim" "$cadence" 2>/dev/null || true
+    [ ! -e "$shim" ] && [ ! -e "$cadence" ]
+  }
+
   if [ -z "$token" ]; then
     # Opt-out (or never opted in): drop any X artifacts; stay silent unless we
     # actually removed something.
     if [ -e "$shim" ] || [ -e "$cadence" ]; then
-      rm -f "$shim" "$cadence"
-      echo "FMX: X mode off - removed relay poll shim and 30s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
+      if x_mode_remove_artifacts; then
+        echo "FMX: X mode off - removed relay poll shim and 30s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
+      else
+        echo "FMX: X mode off - failed to remove relay poll shim or 30s cadence"
+      fi
     fi
     return 0
   fi
@@ -189,15 +197,21 @@ x_mode_setup() {
   done
   if [ "$missing" -ne 0 ]; then
     if [ -e "$shim" ] || [ -e "$cadence" ]; then
-      rm -f "$shim" "$cadence"
-      echo "FMX: X mode off - missing relay poll dependencies; install them and rerun bootstrap"
+      if x_mode_remove_artifacts; then
+        echo "FMX: X mode off - missing relay poll dependencies; install them and rerun bootstrap"
+      else
+        echo "FMX: X mode off - failed to remove relay poll shim or 30s cadence after missing relay poll dependencies"
+      fi
     fi
     return 0
   fi
 
   fmx_arm_failed() {
-    rm -f "$shim" "$cadence" 2>/dev/null || true
-    echo "FMX: X mode off - failed to arm relay poll shim or 30s cadence"
+    if x_mode_remove_artifacts; then
+      echo "FMX: X mode off - failed to arm relay poll shim or 30s cadence"
+    else
+      echo "FMX: X mode off - failed to arm relay poll shim or 30s cadence; stale artifacts remain"
+    fi
   }
 
   mkdir -p "$STATE" "$CONFIG" 2>/dev/null || { fmx_arm_failed; return 0; }

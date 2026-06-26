@@ -166,6 +166,20 @@ SH
     || fail "poll inbox commit failure must emit an error, not a wake marker (got: $out)"
   assert_absent "$home/state/x-inbox/req-rename.json" "poll must not report a committed inbox file that was not created"
   assert_absent "$home/state/x-inbox/req-rename.json.tmp" "poll must clean up the failed inbox temp file"
+  assert_present "$home/state/x-poll.error" "poll inbox commit failure must write a dedupe marker"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll repeated inbox commit failure exit"
+  [ -z "$out" ] || fail "repeated poll inbox commit failure must be quiet after the first diagnostic (got: $out)"
+  rm -f "$fakebin/mv"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FMX_RELAY_URL="https://relay.test" \
+    FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-x-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll recovered inbox commit failure exit"
+  [ "$out" = "x-mention req-rename" ] \
+    || fail "poll must emit the mention marker once the inbox write succeeds (got: $out)"
+  assert_absent "$home/state/x-poll.error" "successful inbox write must clear the diagnostic marker"
   pass "fm-x-poll reports inbox commit failures without emitting a mention wake"
 }
 
@@ -405,6 +419,28 @@ test_bootstrap_opt_out_cleanup() {
   pass "bootstrap cleans up X artifacts on opt-out and is silent once off"
 }
 
+test_bootstrap_opt_out_reports_cleanup_failure() {
+  local home fakebin out
+  home="$TMP_ROOT/boot-optout-fail"; mkdir -p "$home"
+  printf 'FMX_PAIRING_TOKEN=tok-out\n' > "$home/.env"
+  FM_HOME="$home" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_present "$home/state/x-watch.check.sh" "opt-in must create the shim before cleanup failure"
+  assert_present "$home/config/x-mode.env" "opt-in must create the cadence config before cleanup failure"
+  fakebin=$(fm_fakebin "$home")
+  cat > "$fakebin/rm" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$fakebin/rm"
+  printf 'FMX_PAIRING_TOKEN=\n' > "$home/.env"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "FMX: X mode off - failed to remove relay poll shim or 30s cadence" \
+    "opt-out cleanup failure must be reported"
+  assert_present "$home/state/x-watch.check.sh" "failed opt-out cleanup must leave the stale shim visible"
+  assert_present "$home/config/x-mode.env" "failed opt-out cleanup must leave the stale cadence visible"
+  pass "bootstrap reports failed X artifact cleanup on opt-out"
+}
+
 test_reply_dry_run_records_not_posts() {
   local home fakebin log out rc
   home="$TMP_ROOT/reply-dry"; mkdir -p "$home"
@@ -488,3 +524,4 @@ test_bootstrap_reports_missing_x_dependency
 test_bootstrap_does_not_announce_when_arm_fails
 test_bootstrap_inert_without_token
 test_bootstrap_opt_out_cleanup
+test_bootstrap_opt_out_reports_cleanup_failure
