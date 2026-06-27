@@ -141,9 +141,13 @@ test_brief_assertion_precedes_branch() {
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
 
-# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse get` pane cwd
-# (so the spawn's worktree-resolution loop resolves to a path we control), names
-# the session on '#S', and swallows window ops. Echoes the fakebin dir.
+# A fake tmux that drives the post-`treehouse get` pane cwd the spawn loop polls.
+# FM_FAKE_PANE_SEQ is a '|'-separated sequence of paths returned on successive
+# pane_current_path reads (clamping to the last entry), modelling the pane's cwd
+# moving through startup transients before treehouse settles into the worktree; a
+# single value behaves like a constant pane path. FM_FAKE_PANE_COUNTER names a
+# per-call counter file so concurrent cases never share state. It names the
+# session on '#S' and swallows window ops. Echoes the fakebin dir.
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -151,7 +155,15 @@ make_spawn_fakebin() {
 #!/usr/bin/env bash
 set -u
 case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_current_path}"*)
+    IFS='|' read -ra seq <<<"${FM_FAKE_PANE_SEQ:-}"
+    c="${FM_FAKE_PANE_COUNTER:-/dev/null}"
+    n=$(cat "$c" 2>/dev/null || echo 0); n=$((n + 1))
+    [ "$c" != /dev/null ] && echo "$n" > "$c"
+    idx=$((n - 1)); last=$(( ${#seq[@]} - 1 ))
+    [ "$idx" -gt "$last" ] && idx=$last
+    printf '%s\n' "${seq[$idx]:-}"
+    exit 0 ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
@@ -165,18 +177,27 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# run_spawn <home> <id> <proj> <pane-seq> <fakebin>: <pane-seq> is the
+# '|'-separated pane-cwd sequence (a single path = constant). A fresh per-id
+# counter file makes each call's sequence start from the top.
 run_spawn() {
-  local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5
+  local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5 counter
+  counter="$TMP_ROOT/.panecount-$id"; rm -f "$counter"
   mkdir -p "$home/data/$id"
   printf 'brief\n' > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$pane" TMUX="fake,1,0" \
-    PATH="$fakebin:$PATH" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_SEQ="$pane" FM_FAKE_PANE_COUNTER="$counter" \
+    TMUX="fake,1,0" PATH="$fakebin:$PATH" \
     "$ROOT/bin/fm-spawn.sh" "$id" "$proj" codex 2>&1
 }
 
+# The wait loop only latches a SETTLED git worktree root distinct from PROJ_ABS,
+# and the post-loop isolation guard re-checks with realpaths as defense in depth.
+# Cases that never settle on a worktree root (a stable non-git dir, or a path
+# inside the primary checkout) are rejected by the loop itself; they are not
+# asserted here because they only abort after the loop's full 60s poll budget.
 test_spawn_isolation_abort() {
   local home proj fakebin out status
   home="$TMP_ROOT/spawn-home"
@@ -185,25 +206,32 @@ test_spawn_isolation_abort() {
   fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-fake")
   # A genuine isolated linked worktree of the project, detached on the default.
   git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-wt" >/dev/null 2>&1
-  mkdir -p "$TMP_ROOT/spawn-notgit" "$proj/sub"
+  mkdir -p "$TMP_ROOT/spawn-wt/sub"
 
-  # Abort: the pane resolves to a plain non-git directory (not a worktree at all).
-  out=$(run_spawn "$home" abort-notgit-dd4 "$proj" "$TMP_ROOT/spawn-notgit" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn into a non-worktree dir should abort"
-  assert_contains "$out" "did not yield an isolated worktree" "non-worktree spawn lacked the isolation error"
-  assert_absent "$home/state/abort-notgit-dd4.meta" "aborted spawn must not record meta"
+  # Abort via the isolation guard: the pane settles on a SUBDIR of an isolated
+  # worktree, so the loop latches it (its toplevel != PROJ_ABS) but the realpath
+  # guard rejects it because the resolved path is not the worktree root.
+  out=$(run_spawn "$home" abort-subdir-dd4 "$proj" "$TMP_ROOT/spawn-wt/sub" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn settling inside a worktree subdir should abort"
+  assert_contains "$out" "did not yield an isolated worktree" "worktree-subdir spawn lacked the isolation error"
+  assert_absent "$home/state/abort-subdir-dd4.meta" "aborted spawn must not record meta"
 
-  # Abort: the pane resolves INTO the primary checkout (a subdir of PROJ_ABS).
-  out=$(run_spawn "$home" abort-primary-ee5 "$proj" "$proj/sub" "$fakebin"); status=$?
-  expect_code 1 "$status" "spawn landing inside the primary checkout should abort"
-  assert_contains "$out" "did not yield an isolated worktree" "primary-checkout spawn lacked the isolation error"
-
-  # Proceed: the pane resolves to a genuine, isolated worktree.
+  # Proceed: the pane resolves to a genuine, isolated worktree root.
   out=$(run_spawn "$home" ok-isolated-ff6 "$proj" "$TMP_ROOT/spawn-wt" "$fakebin"); status=$?
   expect_code 0 "$status" "spawn into a genuine isolated worktree should succeed"
   assert_contains "$out" "spawned ok-isolated-ff6" "isolated spawn did not report success"
   assert_not_contains "$out" "did not yield an isolated worktree" "isolated spawn wrongly tripped the guard"
-  pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
+
+  # Proceed despite a startup transient: the pane first reports a non-worktree
+  # path (e.g. $HOME) before treehouse settles into the worktree. The loop must
+  # skip the transient and wait for the settled root rather than latch it and
+  # then trip the isolation guard (the bug fixed in fix(fm-spawn)).
+  out=$(run_spawn "$home" ok-transient-gg7 "$proj" "$home|$TMP_ROOT/spawn-wt" "$fakebin"); status=$?
+  expect_code 0 "$status" "spawn should wait past a startup transient and settle into the worktree"
+  assert_contains "$out" "spawned ok-transient-gg7" "transient-then-settled spawn did not report success"
+  assert_contains "$out" "worktree=$TMP_ROOT/spawn-wt" "spawn latched the transient instead of the settled worktree"
+  assert_not_contains "$out" "did not yield an isolated worktree" "transient-then-settled spawn wrongly tripped the guard"
+  pass "fm-spawn: waits for a settled isolated worktree, skipping startup transients, and aborts otherwise"
 }
 
 test_lib_classification
