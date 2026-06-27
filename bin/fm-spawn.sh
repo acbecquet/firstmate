@@ -357,12 +357,20 @@ tmux new-window -d -t "$SES" -n "$W" -c "$PROJ_ABS"
 if [ "$KIND" != secondmate ]; then
   tmux send-keys -t "$T" 'treehouse get' Enter
 
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
+  # Wait for the treehouse subshell to SETTLE into a real worktree. During window
+  # and shell startup the pane's cwd transiently passes through other paths (e.g.
+  # $HOME) before treehouse enters the worktree, so accepting the first path that is
+  # merely != PROJ_ABS can latch such a transient (which then trips the isolation
+  # guard below and aborts a spawn that would have succeeded). Only accept a path
+  # that is a settled git worktree root distinct from PROJ_ABS; keep polling otherwise.
   for _ in $(seq 1 60); do
     p=$(tmux display-message -p -t "$T" '#{pane_current_path}' 2>/dev/null || true)
     if [ -n "$p" ] && [ "$p" != "$PROJ_ABS" ]; then
-      WT="$p"
-      break
+      p_top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || true)
+      if [ -n "$p_top" ] && [ "$p_top" != "$PROJ_ABS" ]; then
+        WT="$p"
+        break
+      fi
     fi
     sleep 1
   done
@@ -376,8 +384,9 @@ if [ "$KIND" != secondmate ]; then
   # (PROJ_ABS). Firstmate is a treehouse-pooled repo of itself, so a treehouse-get
   # misfire can leave the pane in (or in a subdir of, or a symlink to) the primary
   # checkout; branching/committing there would tangle the primary onto a feature
-  # branch (see fm-tangle-lib.sh). The wait loop above only proves the pane left
-  # PROJ_ABS's exact path; this proves it landed in a true, separate worktree.
+  # branch (see fm-tangle-lib.sh). The wait loop above already requires a settled
+  # git worktree root distinct from PROJ_ABS; this re-checks with authoritative
+  # realpaths as defense in depth before anything branches or commits.
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
