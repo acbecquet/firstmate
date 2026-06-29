@@ -19,8 +19,9 @@
 #   the box) inside the box's registry tmux-session, launching the harness under
 #   `claude remote-control` so the captain can ride along from claude.ai/code. It
 #   records machine=/host=/remote_home= in meta (so fm-send/fm-peek/fm-status-pull
-#   route remotely and recovery falls out of machine=), delivers the charter
-#   pointer, and arms status carry-back. machine= empty/hub is the local path,
+#   route remotely and recovery falls out of machine=), seeds the box's
+#   data/charter.md over the transport so the charter pointer resolves, delivers
+#   that pointer, and arms status carry-back. machine= empty/hub is the local path,
 #   byte-for-byte unchanged.
 #   Ship/scout spawns refuse to launch after treehouse get unless the resolved pane
 #   path is a real git worktree root distinct from the primary project checkout.
@@ -387,11 +388,45 @@ remote_charter_landed() {  # <target>
   return 1
 }
 
+# seed_remote_charter <prefix> <remote-home> <id>: copy the hub-side filled charter
+# brief onto the box as <remote-home>/data/charter.md over the transport, then read it
+# back and confirm it matches. A box firstmate home is a fresh clone with an empty,
+# gitignored data/ (unlike a local secondmate, whose home fm-home-seed.sh seeds), so
+# nothing else in the spin-up creates this file, yet the charter pointer below tells
+# the box to read it. Fails loudly (exit 1) when the hub-side charter is missing or
+# still holds the {TASK} placeholder, or when the box-side write cannot be confirmed -
+# a remote secondmate with no charter has nothing to operate from. Globals: DATA.
+seed_remote_charter() {  # <prefix> <remote-home> <id>
+  local prefix=$1 rhome=$2 id=$3 brief="$DATA/$3/brief.md" want got
+  if [ ! -f "$brief" ]; then
+    echo "error: no charter brief at $brief to seed onto the box for remote secondmate $id; scaffold and fill one with bin/fm-brief.sh $id --secondmate <project>... before spinning up the remote secondmate" >&2
+    exit 1
+  fi
+  if grep -F '{TASK}' "$brief" >/dev/null 2>&1; then
+    echo "error: charter brief at $brief still contains the {TASK} placeholder; fill it before spinning up remote secondmate $id" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
+  if ! ${prefix} "mkdir -p $(fm_shquote "$rhome/data") && cat > $(fm_shquote "$rhome/data/charter.md")" < "$brief" 2>/dev/null; then
+    echo "error: could not write data/charter.md onto the box for remote secondmate $id (transport or write failed); the charter was NOT seeded" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
+  got=$(${prefix} "cat $(fm_shquote "$rhome/data/charter.md")" </dev/null 2>/dev/null || true)
+  want=$(cat "$brief")
+  if [ "$got" != "$want" ]; then
+    echo "error: could not confirm data/charter.md landed on the box for remote secondmate $id (read-back did not match the hub-side charter); the charter was NOT reliably seeded" >&2
+    exit 1
+  fi
+}
+
 # spawn_remote_secondmate: start a secondmate's firstmate session ON its box over
 # the transport, then wire routing/recovery to it. Uses the box's registry facts
-# (host, tmux-session, harness) and never touches a local home — the box owns its
+# (host, tmux-session, harness) and never touches a LOCAL home — the box owns its
 # own home, version, and crewmates; the hub routes one work line in and reads one
-# status line out. Globals: ID, MACHINE, FIRSTMATE_HOME (= the box home path),
+# status line out. It does seed the box's data/charter.md over the wire (the box
+# home's data/ is an empty fresh clone) so the charter pointer resolves. Globals:
+# ID, MACHINE, FIRSTMATE_HOME (= the box home path),
 # STATE, FM_ROOT, FM_HOME. Exits the script on completion or hard error.
 spawn_remote_secondmate() {
   local id=$ID machine=$MACHINE rhome=$FIRSTMATE_HOME
@@ -423,6 +458,13 @@ spawn_remote_secondmate() {
     echo "error: remote window $T already exists on machine \"$machine\"" >&2
     exit 1
   fi
+  # Seed the box-side charter before anything is launched, so the 'Read
+  # data/charter.md' pointer below resolves to a real charter. The hub never touches
+  # a local home here, but a box home is a fresh clone with an empty data/, so the
+  # charter must be transferred over the wire and confirmed (or we abort before
+  # opening any box window). Mirrors how the local secondmate path guarantees the
+  # charter via fm-home-seed.sh.
+  seed_remote_charter "$prefix" "$rhome" "$id"
   # Ensure the box's session exists, then open the secondmate's window in the
   # remote firstmate home and launch the harness under Remote Control. The env
   # (cleared overrides + FM_HOME=<box home>) runs on the box, exactly like the
@@ -458,8 +500,8 @@ spawn_remote_secondmate() {
   } > "$STATE/$id.meta"
 
   # Deliver the charter pointer as a from-firstmate request: the booted Remote
-  # Control session reads data/charter.md from its own box home and operates as
-  # this secondmate. fm-send re-derives the transport from meta machine= and
+  # Control session reads data/charter.md from its own box home (seeded above) and
+  # operates as this secondmate. fm-send re-derives the transport from meta machine= and
   # marks the line from-firstmate (kind=secondmate), so the reply returns on the
   # status path. FM_TMUX_SSH= clears our armed prefix so fm-send runs its own full
   # transport resolution + stranger-pane guard.

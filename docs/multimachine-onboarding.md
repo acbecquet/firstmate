@@ -166,7 +166,9 @@ Absent tags mean local (hub) behavior, unchanged.
   bin/fm-spawn.sh roybot-dev --secondmate
   ```
 
-  This opens a `fm-roybot-dev` window in the box's registry `tmux-session`, rooted at the box's firstmate home, launches `claude remote-control --name fm-roybot-dev --permission-mode bypassPermissions` (ride along from claude.ai/code), records `machine=`/`host=`/`remote_home=` in the hub-side meta, delivers the charter pointer, and arms status carry-back. A box whose registry `harness:` is not `claude` is refused (only claude has Remote Control today). A secondmate with no `machine:` (or `machine: hub`) launches locally, exactly as before.
+  This opens a `fm-roybot-dev` window in the box's registry `tmux-session`, rooted at the box's firstmate home, launches `claude remote-control --name fm-roybot-dev --permission-mode bypassPermissions` (ride along from claude.ai/code), records `machine=`/`host=`/`remote_home=` in the hub-side meta, **seeds the box's `data/charter.md` over the transport** (so the charter pointer it then delivers resolves on a fresh box home), and arms status carry-back. A box whose registry `harness:` is not `claude` is refused (only claude has Remote Control today). A secondmate with no `machine:` (or `machine: hub`) launches locally, exactly as before.
+
+  The hub seeds the charter automatically — there is **no** manual out-of-band charter step on the box. It copies the hub-side filled charter brief (`data/<id>/brief.md`, scaffolded and filled with `bin/fm-brief.sh <id> --secondmate <project>...`) onto the box as `data/charter.md` and reads it back to confirm it landed; if the hub-side charter is missing or still holds the `{TASK}` placeholder, or the box-side write cannot be confirmed, the spin-up aborts before opening the box window rather than launching a charter-less secondmate. Fill the charter brief on the hub before this step (the same brief the local secondmate path seeds via `bin/fm-home-seed.sh`).
 
 ## Transport: making `ssh <box> tmux` reach the WSL2 session
 

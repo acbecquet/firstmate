@@ -42,10 +42,13 @@ REG_SECONDMATES='# Secondmates
 # A fake `ssh` that records the transported remote command (its last argv word)
 # and answers the two channels: `tmux ...` (window ops + fm-send composer probes)
 # and `cat ...` (status carry-back). FAKE_REMOTE_FILE controls what a remote
-# `cat` returns; FAKE_REMOTE_MISSING makes it fail (unreachable box). Runs no real
-# ssh and no real tmux. A no-op `sleep` keeps the verified-submit loop instant.
+# `cat` returns; FAKE_REMOTE_MISSING makes it fail (unreachable box). The charter
+# seed (`mkdir -p ... && cat > .../charter.md`) and its read-back are simulated
+# faithfully through a stub-local store, so the box file written over the wire is
+# what the read-back returns. Runs no real ssh and no real tmux. A no-op `sleep`
+# keeps the verified-submit loop instant.
 make_ssh_stub() {  # <dir> <logfile> -> echoes fakebin dir
-  local fb="$1/fakebin" log=$2
+  local fb="$1/fakebin" log=$2 store="$1/box-charter"
   mkdir -p "$fb"
   cat > "$fb/ssh" <<EOF
 #!/usr/bin/env bash
@@ -54,6 +57,10 @@ cmd=""
 for cmd; do :; done   # last positional arg is the remote command string
 printf '%s\n' "\$cmd" >> "$log"
 case "\$cmd" in
+  *"cat > "*charter.md*)              # charter seed write: capture stdin to the box store
+    cat > "$store" ;;
+  "cat "*charter.md*)                 # charter read-back: return what was seeded
+    cat "$store" 2>/dev/null ;;
   "cat "*)
     [ -n "\${FAKE_REMOTE_MISSING:-}" ] && exit 1
     [ -n "\${FAKE_REMOTE_FILE:-}" ] && cat "\$FAKE_REMOTE_FILE"
@@ -75,13 +82,16 @@ SH
   printf '%s\n' "$fb"
 }
 
-# A home with the machine + secondmate registries and an empty state/ dir.
+# A home with the machine + secondmate registries, the hub-side charter brief the
+# remote spin-up seeds onto the box, and an empty state/ dir.
 make_remote_home() {  # -> echoes home dir
   local home
   home=$(fm_test_tmproot fm-m3)
-  mkdir -p "$home/data" "$home/state"
+  mkdir -p "$home/data" "$home/state" "$home/data/cabin-sm"
   printf '%s\n' "$REG_MACHINES" > "$home/data/machines.md"
   printf '%s\n' "$REG_SECONDMATES" > "$home/data/secondmates.md"
+  printf 'Charter: operate as the RoyBot remote dev secondmate per AGENTS.md.\n' \
+    > "$home/data/cabin-sm/brief.md"
   printf '%s\n' "$home"
 }
 
@@ -133,18 +143,25 @@ test_remote_spawn_constructs_commands() {
   assert_grep "remote_home=/home/cap/firstmate" "$meta" "meta records the remote home"
   assert_grep "window=firstmate:fm-cabin-sm"  "$meta" "meta records the box session:window"
 
-  # 4. The charter pointer is delivered as a from-firstmate request over the wire.
+  # 4. The box-side charter is seeded over the wire before the pointer is delivered,
+  #    so 'Read data/charter.md' resolves to a real charter on a fresh box home.
+  assert_grep "cat > '/home/cap/firstmate/data/charter.md'" "$log" \
+    "remote spawn must seed the box's data/charter.md over the transport"
+  assert_grep "cat '/home/cap/firstmate/data/charter.md'" "$log" \
+    "remote spawn must read the box charter back to confirm the seed landed"
+
+  # 5. The charter pointer is delivered as a from-firstmate request over the wire.
   assert_grep "[fm-from-firstmate]" "$log" \
     "the charter pointer must carry the from-firstmate marker"
   assert_grep "Read data/charter.md" "$log" \
     "the charter pointer must tell the box session to read its charter"
 
-  # 5. Status carry-back is armed on the watcher's check cadence.
+  # 6. Status carry-back is armed on the watcher's check cadence.
   assert_present "$home/state/cabin-sm.check.sh" "remote spawn must arm status carry-back"
   assert_grep "fm-status-pull.sh" "$home/state/cabin-sm.check.sh" \
     "the armed check must invoke the status pull"
 
-  # 6. The spawned line reports the machine for the captain-facing trail.
+  # 7. The spawned line reports the machine for the captain-facing trail.
   assert_contains "$out" "machine=cabin-desktop" "the spawned line names the box"
   pass "remote spawn launches the box session under Remote Control and wires routing"
 }
@@ -286,9 +303,45 @@ EOF
   pass "local secondmate spawn is unchanged: local tmux, no ssh, no machine= meta"
 }
 
+# ---------------------------------------------------------------------------
+# A missing or unfilled hub-side charter aborts BEFORE the box window is opened,
+# so a remote secondmate is never launched with no charter to operate from.
+# ---------------------------------------------------------------------------
+test_missing_charter_aborts_before_launch() {
+  local home fb log err rc
+  home=$(make_remote_home)
+  rm -f "$home/data/cabin-sm/brief.md"   # no hub-side charter to seed
+  log="$home/ssh.log"
+  fb=$(make_ssh_stub "$home" "$log")
+  err="$home/err"
+  run_remote_spawn "$fb" "$home" cabin-sm claude --secondmate >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a missing hub-side charter must abort the remote spawn"
+  assert_contains "$(cat "$err")" "no charter brief" \
+    "the refusal must explain the charter is missing"
+  assert_no_grep "new-window" "$log" "no box window may be opened when the charter cannot be seeded"
+  pass "remote spawn aborts before launch when the hub-side charter is missing"
+}
+
+test_unfilled_charter_aborts_before_launch() {
+  local home fb log err rc
+  home=$(make_remote_home)
+  printf 'Charter: {TASK}\n' > "$home/data/cabin-sm/brief.md"   # placeholder still present
+  log="$home/ssh.log"
+  fb=$(make_ssh_stub "$home" "$log")
+  err="$home/err"
+  run_remote_spawn "$fb" "$home" cabin-sm claude --secondmate >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unfilled {TASK} charter must abort the remote spawn"
+  assert_contains "$(cat "$err")" "{TASK} placeholder" \
+    "the refusal must explain the charter is still a placeholder"
+  assert_no_grep "new-window" "$log" "no box window may be opened when the charter is unfilled"
+  pass "remote spawn aborts before launch when the hub-side charter is unfilled"
+}
+
 test_remote_spawn_constructs_commands
 test_registry_machine_routes_first_spawn
 test_unsupported_remote_harness_refused
+test_missing_charter_aborts_before_launch
+test_unfilled_charter_aborts_before_launch
 test_roundtrip_in_and_back
 test_local_secondmate_path_unchanged
 
