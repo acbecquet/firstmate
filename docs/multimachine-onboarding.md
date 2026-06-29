@@ -21,10 +21,10 @@ The remote machines are Windows. Firstmate's supervision model needs a Unix tool
 | Harness first-run trust / permission dialog | **Manual, out-of-band** | A one-time security prompt that must be accepted by a human on the box. |
 | Join the tailnet (`tailscale up`) | **Manual, out-of-band** | Interactive device authorization. |
 | Install firstmate in its own `FM_HOME` | **Manual first time**, then automated | Clone once; thereafter `/updatefirstmate` and the spawn pre-launch sync keep it current. |
-| Start the session under `claude remote-control` in tmux | **Manual first time**, then firstmate-managed | The hub takes over routing once the session exists. |
+| Start the session under `claude remote-control` in tmux | **Hub (firstmate)**, once the box is onboarded | After the toolchain, auth, tailnet, firstmate home, and harness trust exist, the hub spins up the secondmate's Remote Control session itself with `bin/fm-spawn.sh --secondmate` (see step 9). A manual `claude remote-control` is only a fallback for the very first bring-up before trust is accepted. |
 | Register the box + route work | **Hub (firstmate)** | `data/machines.md`, the `secondmates.md` `machine:` field, the `projects.md` `@machine` tag. |
 
-The rule of thumb: anything that requires a human to accept a trust prompt or prove identity (gh auth, harness trust, tailnet join) is manual and out-of-band, once per box. Everything after the session exists is hub-driven.
+The rule of thumb: anything that requires a human to accept a trust prompt or prove identity (gh auth, harness trust, tailnet join) is manual and out-of-band, once per box. Everything after the one-time trust gates are cleared is hub-driven — including starting the Remote Control session.
 
 ## Steps (run on the Windows box, inside WSL2 unless noted)
 
@@ -105,7 +105,9 @@ Resolve any `MISSING:` / `NEEDS_GH_AUTH` lines bootstrap prints (that is what st
 
 Launch the harness once by hand in this home and accept its trust / permission prompt. This one-time dialog cannot be auto-accepted; a human on the box must approve it before unattended dispatch works.
 
-### 7. Start the session under `claude remote-control` in tmux — *manual first time*
+### 7. Accept Remote Control once by hand — *manual first time*
+
+Before the hub can start sessions unattended, launch `claude remote-control` by hand once so any first-run trust/permission prompt is accepted by a human on the box:
 
 ```sh
 tmux new-session -s firstmate
@@ -114,6 +116,8 @@ claude remote-control
 ```
 
 The tmux session name (`firstmate` here) is what goes in the registry `tmux-session:` field and is authoritative for any remote peek. From claude.ai/code (browser or phone) attach to this same session to ride along.
+
+Once trust is accepted, you do **not** need to keep starting sessions by hand: from step 9 onward the hub spins up each secondmate's Remote Control window itself with `bin/fm-spawn.sh --secondmate`. This manual launch is only the one-time trust bring-up. Leave the `firstmate` session running (or let the hub recreate it) so the registry `tmux-session:` stays valid.
 
 ### 8. Register the box on the hub — *hub (firstmate)*
 
@@ -155,6 +159,15 @@ bin/fm-machines.sh get cabin-desktop host
 
 Absent tags mean local (hub) behavior, unchanged.
 
+- Spin the secondmate up on the box from the hub — once the `machine:` field is set, `fm-spawn.sh --secondmate` starts the box session itself over the transport, under Remote Control, rather than expecting a hand-started session:
+
+  ```sh
+  # on the hub
+  bin/fm-spawn.sh roybot-dev --secondmate
+  ```
+
+  This opens a `fm-roybot-dev` window in the box's registry `tmux-session`, rooted at the box's firstmate home, launches `claude remote-control --name fm-roybot-dev --permission-mode bypassPermissions` (ride along from claude.ai/code), records `machine=`/`host=`/`remote_home=` in the hub-side meta, delivers the charter pointer, and arms status carry-back. A box whose registry `harness:` is not `claude` is refused (only claude has Remote Control today). A secondmate with no `machine:` (or `machine: hub`) launches locally, exactly as before.
+
 ## Transport: making `ssh <box> tmux` reach the WSL2 session
 
 The hub reaches a remote box's tmux by running `ssh <host> "tmux …"` — the prefix comes from `bin/fm-machines.sh ssh-prefix <id>` (transport + `host:`), which `bin/fm-transport-lib.sh` exports as `FM_TMUX_SSH` so `fm-send`/`fm-peek` transport every tmux call (AGENTS.md section 14, *Transport adapter*). For this to work, an ssh login to the box **must land in the WSL2 Ubuntu environment** where tmux, the firstmate tmux session, and the right `PATH` live — not a Windows `cmd`/PowerShell shell.
@@ -186,7 +199,19 @@ A remote secondmate escalates by appending to its **own** home's `state/<id>.sta
 bin/fm-status-pull.sh arm <id>
 ```
 
-This keeps the high-frequency watcher local and puts the wire only on the heartbeat-cadence pull (AGENTS.md section 14, *Status carry-back*). An asleep or off-tailnet box simply yields no new status until it returns.
+This keeps the high-frequency watcher local and puts the wire only on the heartbeat-cadence pull (AGENTS.md section 14, *Status carry-back*). An asleep or off-tailnet box simply yields no new status until it returns. `bin/fm-spawn.sh --secondmate` (step 9) arms this automatically when it spins a remote secondmate up.
+
+### Verifying the round-trip on a real box
+
+`tests/m3-roundtrip-live.sh` is a manual harness that proves the end-to-end round-trip — a marked work line routed IN over `ssh localhost`, the box recording it, and a status line carried BACK into the hub's local `state/` — using a second `FM_HOME` on the same box as a stand-in "remote". It pins **every** tmux call to a private `-L fm-m3-test` server (never the box's default tmux server that hosts live supervision), skips cleanly when `ssh localhost` is not usable non-interactively, and tears down only its own private server and temp homes. Run it by hand:
+
+```sh
+# on a box where `ssh localhost` works with key-based auth
+tests/m3-roundtrip-live.sh
+# FM_M3_KEEP=1 leaves the temp homes for inspection on failure.
+```
+
+The committed, deterministic proof of the same behavior (no real ssh/tmux) is `tests/fm-spawn-remote-secondmate.test.sh`, which runs in CI.
 
 ## Offline and asleep boxes
 
@@ -194,4 +219,4 @@ A personal box may sleep, suspend, reboot, or drop off the tailnet. The accepted
 
 ## What this milestone does and does not include
 
-This runbook, the registry/routing fields, the transport that carries `fm-send`/`fm-peek` to a remote tmux, and the status carry-back that surfaces a remote escalation into the hub's watcher are all in place (AGENTS.md section 14). The remaining cross-machine pieces — the reachability probe with its `awaiting-machine` backlog blocker, and routing `machine:`-tagged homes through `origin` fast-forward for cross-machine self-update — are later milestones. Everything stays additive: with no machine registry and no routing tags, firstmate behaves exactly as it does on the hub alone.
+This runbook, the registry/routing fields, the transport that carries `fm-send`/`fm-peek` to a remote tmux, the status carry-back that surfaces a remote escalation into the hub's watcher, and the hub-driven remote secondmate spin-up under Remote Control (`fm-spawn.sh --secondmate`) are all in place (AGENTS.md section 14). The remaining cross-machine pieces — the reachability probe with its `awaiting-machine` backlog blocker, and routing `machine:`-tagged homes through `origin` fast-forward for cross-machine self-update — are later milestones. Everything stays additive: with no machine registry and no routing tags, firstmate behaves exactly as it does on the hub alone.
