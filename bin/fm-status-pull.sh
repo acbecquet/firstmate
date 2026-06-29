@@ -84,7 +84,7 @@ pull_one() {
   # cat the remote status file over the transport. ssh failure (unreachable box)
   # or a missing remote file both leave remote unset -> clean skip.
   # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
-  if ! remote=$(${prefix} "cat $(fm_shquote "$rstatus")" 2>/dev/null); then
+  if ! remote=$(${prefix} "cat $(fm_shquote "$rstatus")" </dev/null 2>/dev/null); then
     echo "note: machine \"$machine\" unreachable or status absent for \"$id\"; skipped" >&2
     return 0
   fi
