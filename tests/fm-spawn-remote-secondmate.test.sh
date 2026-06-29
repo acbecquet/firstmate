@@ -61,7 +61,7 @@ case "\$cmd" in
   *has-session*)  exit 0 ;;          # the box's session already exists
   *list-windows*) : ;;               # no window pre-exists on the box
   *cursor_y*)     printf '0\n' ;;     # composer probe: numeric cursor row
-  *capture-pane*) : ;;               # empty composer / empty pane
+  *capture-pane*) printf '\342\224\202 > \342\224\202\n' ;;  # claude composer box: │ > │ (RC up, idle)
   *)              : ;;               # new-window / new-session / send-keys
 esac
 exit 0

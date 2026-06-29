@@ -338,6 +338,55 @@ remote_launch_template() {
   esac
 }
 
+# remote_rc_composer_ready <target>: 0 once the box pane shows the claude Remote
+# Control TUI (its bordered composer) AND that composer reads idle/empty. Until the
+# TUI is up the box pane is still the login shell, whose bare prompt also reads
+# "empty" to the composer probe; requiring the composer BORDER to be on screen as
+# well distinguishes a live RC composer from the bare shell, so the charter is never
+# typed into the box shell. claude (the only Remote Control harness today) draws its
+# input box with light/heavy box borders; a login shell draws none.
+remote_rc_composer_ready() {  # <target>
+  local target=$1 cap
+  cap=$(fm_tmux capture-pane -p -t "$target" -S -40 2>/dev/null) || return 1
+  case "$cap" in
+    *'│'*|*'┃'*) : ;;
+    *) return 1 ;;
+  esac
+  [ "$(fm_tmux_composer_state "$target")" = empty ]
+}
+
+# remote_wait_rc_ready <target>: poll up to FM_SPAWN_RC_TRIES x FM_SPAWN_RC_SLEEP
+# (default 60 x 0.5s, mirroring the local ship path's bounded readiness wait) for the
+# box's Remote Control composer to come up. 0 once ready; 1 if it never did.
+remote_wait_rc_ready() {  # <target>
+  local target=$1 tries=${FM_SPAWN_RC_TRIES:-60} slp=${FM_SPAWN_RC_SLEEP:-0.5} i=0
+  while [ "$i" -lt "$tries" ]; do
+    remote_rc_composer_ready "$target" && return 0
+    i=$((i + 1))
+    sleep "$slp"
+  done
+  return 1
+}
+
+# remote_charter_landed <target>: 0 once the composer positively reads empty after a
+# charter send (the text was accepted and cleared); 1 if it still holds pending text
+# (Enter swallowed) or could not be read. Unlike fm-send's lenient "an unreadable
+# pane reads as submitted", this requires a POSITIVE empty read, polling a few times
+# so a transient unreadable pane is re-read rather than misjudged as delivered.
+remote_charter_landed() {  # <target>
+  local target=$1 tries=${FM_SPAWN_RC_CONFIRM_TRIES:-6} slp=${FM_SPAWN_RC_SLEEP:-0.5} i=0 s
+  while [ "$i" -lt "$tries" ]; do
+    s=$(fm_tmux_composer_state "$target")
+    case "$s" in
+      empty) return 0 ;;
+      pending) return 1 ;;
+    esac
+    i=$((i + 1))
+    sleep "$slp"
+  done
+  return 1
+}
+
 # spawn_remote_secondmate: start a secondmate's firstmate session ON its box over
 # the transport, then wire routing/recovery to it. Uses the box's registry facts
 # (host, tmux-session, harness) and never touches a local home — the box owns its
@@ -413,14 +462,32 @@ spawn_remote_secondmate() {
   # this secondmate. fm-send re-derives the transport from meta machine= and
   # marks the line from-firstmate (kind=secondmate), so the reply returns on the
   # status path. FM_TMUX_SSH= clears our armed prefix so fm-send runs its own full
-  # transport resolution + stranger-pane guard. A settle lets Remote Control
-  # pre-create its session before the line is typed (FM_SPAWN_REMOTE_SETTLE=0 in
-  # tests).
-  [ "${FM_SPAWN_REMOTE_SETTLE:-2}" = 0 ] || sleep "${FM_SPAWN_REMOTE_SETTLE:-2}"
-  if ! FM_TMUX_SSH='' "$FM_ROOT/bin/fm-send.sh" "$W" \
-        'Read data/charter.md in this firstmate home and operate as that secondmate per your AGENTS.md.' \
-        >/dev/null 2>&1; then
-    echo "warning: could not deliver the charter pointer to remote secondmate $id; steer it by hand once Remote Control is up" >&2
+  # transport resolution + stranger-pane guard.
+  #
+  # Booting claude over the wire can take well past a fixed 2s, and until the TUI is
+  # up the box pane is still the login shell - a charter typed there would run as a
+  # shell command and be lost. So poll (bounded) for the Remote Control composer
+  # before typing, then POSITIVELY confirm the line landed and retry, rather than
+  # trusting fm-send's lenient "an unreadable pane reads as submitted". The charter
+  # read is idempotent, so a retry that duplicates it is harmless; a silent drop is
+  # not. If it can never be confirmed, warn loudly - the box session is up, but the
+  # captain must steer it by hand.
+  local charter='Read data/charter.md in this firstmate home and operate as that secondmate per your AGENTS.md.'
+  if ! remote_wait_rc_ready "$T"; then
+    echo "warning: remote secondmate $id Remote Control composer did not come up; the box session is launched but the charter was NOT delivered - steer it by hand once Remote Control is up (read data/charter.md)" >&2
+  else
+    local attempts=${FM_SPAWN_CHARTER_RETRIES:-3} n=0 delivered=0
+    while [ "$n" -lt "$attempts" ]; do
+      n=$((n + 1))
+      if FM_TMUX_SSH='' "$FM_ROOT/bin/fm-send.sh" "$W" "$charter" >/dev/null 2>&1 \
+         && remote_charter_landed "$T"; then
+        delivered=1
+        break
+      fi
+      remote_rc_composer_ready "$T" || remote_wait_rc_ready "$T" || break
+    done
+    [ "$delivered" = 1 ] || \
+      echo "warning: could not confirm the charter pointer landed for remote secondmate $id after $attempts attempt(s); the box session is up but steer it by hand (read data/charter.md)" >&2
   fi
 
   # Arm status carry-back so the hub watcher wakes on the box's escalations
