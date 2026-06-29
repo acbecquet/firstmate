@@ -128,7 +128,7 @@ test_ssh_prefix() {
   local home out
   home=$(make_reg_home)
   out=$(run_machines "$home" ssh-prefix cabin-desktop)
-  [ "$out" = "ssh -o BatchMode=yes -o ConnectTimeout=8 cabin-desktop.ts.net" ] \
+  [ "$out" = "ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 cabin-desktop.ts.net" ] \
     || fail "ssh-prefix default opts wrong (got: '$out')"
   out=$(FM_SSH_OPTS='' run_machines "$home" ssh-prefix cabin-desktop)
   [ "$out" = "ssh cabin-desktop.ts.net" ] || fail "ssh-prefix empty FM_SSH_OPTS should be bare (got: '$out')"
@@ -186,7 +186,7 @@ test_transport_arm() {
 
   # (2) meta machine= resolves to the registry ssh-prefix when the session matches.
   out=$(arm_scenario "$data" "$state" "fm-cabin-sm" "firstmate:fm-cabin-sm")
-  assert_contains "$out" "RESULT=[ssh -o BatchMode=yes -o ConnectTimeout=8 cabin-desktop.ts.net]" \
+  assert_contains "$out" "RESULT=[ssh -o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 cabin-desktop.ts.net]" \
     "meta machine= should resolve to the registry ssh-prefix"
 
   # (3) Stranger-pane guard: session != registry tmux-session => refused.

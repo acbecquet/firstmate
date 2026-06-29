@@ -56,10 +56,13 @@ REG="$DATA/machines.md"
 
 # Default ssh options baked into an ssh-prefix: fail fast and never block on a
 # password prompt, so a sleeping or off-tailnet box fails CLEANLY instead of
-# hanging a supervision call. Override with FM_SSH_OPTS; set FM_SSH_OPTS= (empty)
-# to emit a bare "ssh <host>". Only defaulted when unset, so an explicit empty
-# value is honored.
-FM_SSH_OPTS=${FM_SSH_OPTS--o BatchMode=yes -o ConnectTimeout=8}
+# hanging a supervision call. ConnectTimeout bounds the TCP connect; the
+# ServerAlive* pair bounds a connection that goes silent AFTER connecting (e.g. a
+# box whose origin stalls mid-fetch), so the ssh dies in ~ServerAliveInterval *
+# ServerAliveCountMax seconds instead of hanging. Override with FM_SSH_OPTS; set
+# FM_SSH_OPTS= (empty) to emit a bare "ssh <host>". Only defaulted when unset, so
+# an explicit empty value is honored.
+FM_SSH_OPTS=${FM_SSH_OPTS--o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=3}
 
 # A machine id is a kebab slug: lowercase alphanumerics and hyphens, starting
 # with an alphanumeric. This guards remote-peek targets and registry lookups.

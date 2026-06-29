@@ -474,11 +474,22 @@ ff_remote_secondmate() {  # id machine remote-home ssh-prefix [label]
   fi
   local cmd out line
   cmd=$(remote_ff_command "$home")
+  # Wall-clock bound on the whole box-side run. The ssh-prefix bakes in
+  # ConnectTimeout (TCP connect only), so a reachable box whose own `git fetch
+  # origin` stalls mid-transfer would otherwise hang this ssh indefinitely; the
+  # timeout caps that post-connect stall and turns it into the same clean skip as
+  # an unreachable box, honoring this function's "never an error" contract. Bounded
+  # but generous since a fetch transfers data. Mirrors fm-machine-ping.sh's guard.
+  local ff_timeout=${FM_REMOTE_FF_TIMEOUT:-60}
   # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
-  if ! out=$(${prefix} "$cmd" </dev/null 2>/dev/null); then
+  if command -v timeout >/dev/null 2>&1; then
+    out=$(timeout "$ff_timeout" ${prefix} "$cmd" </dev/null 2>/dev/null)
+  else
+    out=$(${prefix} "$cmd" </dev/null 2>/dev/null)
+  fi || {
     echo "$label: skipped: machine \"$machine\" unreachable"
     return 0
-  fi
+  }
   line=$(printf '%s\n' "$out" | grep -E '^(current|updated |skipped:)' | tail -1)
   case "$line" in
     current)
