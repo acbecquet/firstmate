@@ -38,6 +38,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-tmux-lib.sh"
 # shellcheck source=bin/fm-marker-lib.sh
 . "$SCRIPT_DIR/fm-marker-lib.sh"
+# shellcheck source=bin/fm-transport-lib.sh
+. "$SCRIPT_DIR/fm-transport-lib.sh"
 
 "$SCRIPT_DIR/fm-guard.sh" || true
 
@@ -62,6 +64,13 @@ resolve() {
 RAW_TARGET=$1
 T=$(resolve "$1")
 shift
+
+# Arm the transport: if the target belongs to a remote machine (via FM_TMUX_SSH
+# override, FM_TARGET_MACHINE, or the target's meta machine=), export FM_TMUX_SSH
+# so every tmux call below routes through `ssh <host> tmux ...`. A local target
+# leaves FM_TMUX_SSH unset and the tmux path is byte-for-byte unchanged. A named
+# remote machine that fails validation or the stranger-pane guard is refused here.
+fm_transport_arm "$RAW_TARGET" "$T" "$STATE"
 
 # Mark a from-firstmate -> secondmate request. Only a bare `fm-<id>` target,
 # resolved through this home's meta and recording kind=secondmate, is marked: the
@@ -93,7 +102,7 @@ case "$RAW_TARGET" in
 esac
 
 if [ "${1:-}" = "--key" ]; then
-  tmux send-keys -t "$T" "$2"
+  fm_tmux send-keys -t "$T" "$2"
 else
   # Slash commands open a completion popup in some TUIs (verified on codex);
   # submitting too fast selects nothing, so give the popup time to settle before

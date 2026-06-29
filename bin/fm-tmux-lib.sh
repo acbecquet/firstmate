@@ -38,6 +38,45 @@
 # interrupt"; opencode: "esc interrupt"; pi: "Working...".
 FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.'
 
+# fm_shquote: single-quote-escape one argument so a remote POSIX shell re-parses
+# it as a single literal word. Wraps the value in single quotes and rewrites any
+# embedded single quote as the classic '\'' sequence. Used to ship tmux argv
+# across `ssh <host> '<cmd>'` without spaces, ANSI escapes, tmux format strings,
+# or glyphs being re-split or interpreted by the remote shell.
+fm_shquote() {  # <arg>
+  local s=${1-}
+  s=${s//\'/\'\\\'\'}
+  printf "%s" "'$s'"
+}
+
+# fm_tmux: run a tmux command locally, or transport it to a REMOTE machine's tmux
+# when FM_TMUX_SSH is set. Opt-in and byte-for-byte transparent: with FM_TMUX_SSH
+# empty or unset the call is exactly `tmux "$@"` — identical argv, identical code
+# path — so every local supervision call is unchanged. When FM_TMUX_SSH names a
+# transport command prefix (e.g. "ssh cabin-desktop", set by fm-transport-lib.sh
+# from the machine registry, or exported directly as an override / for loopback
+# tests), the call becomes:
+#   <FM_TMUX_SSH words> "tmux <shell-quoted args>"
+# Each tmux argument is single-quoted (fm_shquote) so it survives the remote
+# shell's re-parse intact. The remote login shell must resolve `tmux` on PATH; on
+# a Windows/WSL2 box that means ssh must land in the WSL2 shell (see
+# docs/multimachine-onboarding.md). Every fm-tmux-lib primitive, and so
+# fm-send.sh's verified composer-submit, shells tmux only through this function,
+# so they all work unchanged against a remote tmux.
+fm_tmux() {
+  if [ -z "${FM_TMUX_SSH:-}" ]; then
+    tmux "$@"
+    return
+  fi
+  local remote='tmux' a
+  for a in "$@"; do
+    remote="$remote $(fm_shquote "$a")"
+  done
+  # FM_TMUX_SSH is a transport command prefix; word-splitting it is intentional.
+  # shellcheck disable=SC2086
+  ${FM_TMUX_SSH} "$remote"
+}
+
 # fm_tmux_strip_ghost: remove dim/faint (ANSI SGR 2) styled runs from one captured
 # composer line, then drop any remaining escape sequences, leaving only the plain,
 # normal-intensity text, the text a human actually typed. Dim/faint runs are
@@ -119,9 +158,9 @@ fm_tmux_strip_ghost() {
 # character classes), and asks whether anything real is left.
 fm_tmux_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 cy raw line stripped
-  cy=$(tmux display-message -p -t "$target" '#{cursor_y}' 2>/dev/null) || { printf 'unknown'; return 0; }
+  cy=$(fm_tmux display-message -p -t "$target" '#{cursor_y}' 2>/dev/null) || { printf 'unknown'; return 0; }
   case "$cy" in ''|*[!0-9]*) printf 'unknown'; return 0 ;; esac
-  raw=$(tmux capture-pane -e -p -t "$target" -S "$cy" -E "$cy" 2>/dev/null) || { printf 'unknown'; return 0; }
+  raw=$(fm_tmux capture-pane -e -p -t "$target" -S "$cy" -E "$cy" 2>/dev/null) || { printf 'unknown'; return 0; }
   line=$(printf '%s\n' "$raw" | fm_tmux_strip_ghost)
   # Strip the composer box borders (literal glyphs — no character classes).
   stripped=${line//│/}      # U+2502 light vertical (claude)
@@ -158,7 +197,7 @@ fm_pane_input_pending() {  # <target>
 # (an agent mid-turn). Scans a 40-line tail like fm-watch.sh.
 fm_pane_is_busy() {  # <target>
   local win=$1 tail40
-  tail40=$(tmux capture-pane -p -t "$win" -S -40 2>/dev/null) || return 1
+  tail40=$(fm_tmux capture-pane -p -t "$win" -S -40 2>/dev/null) || return 1
   printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 \
     | grep -qiE "${FM_BUSY_REGEX:-$FM_TMUX_BUSY_REGEX_DEFAULT}"
 }
@@ -175,7 +214,7 @@ fm_pane_is_busy() {  # <target>
 fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep>
   local target=$1 retries=$2 sleep_s=$3 i=0 state
   while :; do
-    tmux send-keys -t "$target" Enter 2>/dev/null || true
+    fm_tmux send-keys -t "$target" Enter 2>/dev/null || true
     sleep "$sleep_s"
     state=$(fm_tmux_composer_state "$target")
     [ "$state" = pending ] || { printf '%s' "$state"; return 0; }
@@ -186,7 +225,7 @@ fm_tmux_submit_enter_core() {  # <target> <retries> <enter-sleep>
 
 fm_tmux_submit_core() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5
-  tmux send-keys -t "$target" -l "$text" 2>/dev/null || { printf 'send-failed'; return 0; }
+  fm_tmux send-keys -t "$target" -l "$text" 2>/dev/null || { printf 'send-failed'; return 0; }
   sleep "$settle"
   fm_tmux_submit_enter_core "$target" "$retries" "$sleep_s"
 }

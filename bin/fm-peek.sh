@@ -10,6 +10,11 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
+# shellcheck source=bin/fm-tmux-lib.sh
+. "$SCRIPT_DIR/fm-tmux-lib.sh"
+# shellcheck source=bin/fm-transport-lib.sh
+. "$SCRIPT_DIR/fm-transport-lib.sh"
+
 "$SCRIPT_DIR/fm-guard.sh" || true
 
 resolve() {
@@ -32,4 +37,11 @@ resolve() {
 
 T=$(resolve "$1")
 N=${2:-40}
-tmux capture-pane -p -t "$T" -S -"$N"
+
+# Arm the transport: a remote-machine target (via FM_TMUX_SSH override,
+# FM_TARGET_MACHINE, or the target's meta machine=) routes the capture below
+# through `ssh <host> tmux ...`; a local target is byte-for-byte unchanged. The
+# stranger-pane guard refuses a remote session the registry did not sanction.
+fm_transport_arm "$1" "$T" "$STATE"
+
+fm_tmux capture-pane -p -t "$T" -S -"$N"

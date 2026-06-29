@@ -155,10 +155,43 @@ bin/fm-machines.sh get cabin-desktop host
 
 Absent tags mean local (hub) behavior, unchanged.
 
+## Transport: making `ssh <box> tmux` reach the WSL2 session
+
+The hub reaches a remote box's tmux by running `ssh <host> "tmux …"` — the prefix comes from `bin/fm-machines.sh ssh-prefix <id>` (transport + `host:`), which `bin/fm-transport-lib.sh` exports as `FM_TMUX_SSH` so `fm-send`/`fm-peek` transport every tmux call (AGENTS.md section 14, *Transport adapter*). For this to work, an ssh login to the box **must land in the WSL2 Ubuntu environment** where tmux, the firstmate tmux session, and the right `PATH` live — not a Windows `cmd`/PowerShell shell.
+
+**Where the login lands depends on where Tailscale runs:**
+
+- **Recommended — Tailscale inside WSL2.** If `tailscaled` runs inside WSL2 (step 4 already points at Tailscale's WSL guidance), a tailnet ssh to the box terminates directly in WSL2 and `tmux` is on `PATH` with no extra setup. This is the path this runbook assumes; prefer it.
+- **Alternative — Tailscale on the Windows host.** Then tailscale-ssh (or Windows OpenSSH) lands in the Windows default shell, where `tmux` does not exist. Make the remote command run under WSL2 — set the Windows OpenSSH `DefaultShell` to `wsl.exe` (so `tmux …` runs as `wsl.exe tmux …`), or front the box with a small wrapper that re-enters WSL2. This indirection is exactly what the WSL2-resident Tailscale path avoids, so use it only if you cannot move Tailscale into WSL2.
+
+The hub never passes a socket flag or PATH shim: the transport invokes the default `tmux`, which must resolve on the box's **non-interactive** login PATH. `ssh <host> tmux` runs a non-login, non-interactive shell, so an `apt`-installed tmux (in `/usr/bin`) is fine, but a tmux/treehouse/no-mistakes installed outside the default PATH must be added ahead of the interactive guard in the WSL2 user's `~/.bashrc` (or the system PATH), or the remote `tmux` call will fail with "command not found".
+
+The ssh-prefix bakes in `-o BatchMode=yes -o ConnectTimeout=8` (override with `FM_SSH_OPTS`), so the box must accept **non-interactive key-based auth**: tailscale-ssh satisfies this through tailnet ACLs; a plain `ssh` transport needs an ssh-agent identity the hub can use unattended. A box that would prompt for a password fails fast and cleanly instead of hanging a supervision call.
+
+**Verify from the hub** (after step 7's session exists):
+
+```sh
+ssh <box-tailnet-name> tmux -V                        # prints tmux's version from WSL2
+ssh <box-tailnet-name> tmux has-session -t firstmate  # exit 0 once the session is up
+```
+
+If `tmux -V` errors with "command not found" or returns a Windows shell banner, ssh is not landing in WSL2 — fix the landing shell before registering the box. Keep the registry `tmux-session:` field equal to the session name from step 7: the transport's **stranger-pane guard** refuses any remote target whose session does not match the registry, so a mismatch blocks all remote peeks.
+
+### Status carry-back for a remote secondmate
+
+A remote secondmate escalates by appending to its **own** home's `state/<id>.status` on the box. The hub mirrors that file into its local `state/<id>.status` with `bin/fm-status-pull.sh` (it resolves the box from the `<id>.meta` `machine=` field, pulls over the same ssh transport, and writes only on a real change), so the hub watcher wakes on it through the ordinary local signal path. Arm it on the watcher's slow cadence so the network stays off the tight loop:
+
+```sh
+# on the hub, once per remote secondmate id
+bin/fm-status-pull.sh arm <id>
+```
+
+This keeps the high-frequency watcher local and puts the wire only on the heartbeat-cadence pull (AGENTS.md section 14, *Status carry-back*). An asleep or off-tailnet box simply yields no new status until it returns.
+
 ## Offline and asleep boxes
 
 A personal box may sleep, suspend, reboot, or drop off the tailnet. The accepted behavior is to **fail cleanly**: firstmate reports plainly that the machine is asleep or unreachable rather than hanging. A remote crewmate that is already running keeps working and can still land its PR through GitHub during a hub-link outage; anything that needs a captain decision, a relayed status, or a hub-side merge waits until the box is reachable again. The reachability probe and the `awaiting-machine` backlog blocker that automate this queue-and-resume are a later milestone (AGENTS.md section 14, forward references).
 
 ## What this milestone does and does not include
 
-This runbook and the registry/routing fields are the additive hub-side foundation. The transport that actually carries `fm-send`/`fm-peek` to a remote tmux, the status carry-back that surfaces a remote escalation into the hub's watcher, the reachability automation, and cross-machine self-update are later milestones. Until they land, registering a box and tagging its projects changes nothing about how firstmate supervises local crewmates — the fields are inert metadata.
+This runbook, the registry/routing fields, the transport that carries `fm-send`/`fm-peek` to a remote tmux, and the status carry-back that surfaces a remote escalation into the hub's watcher are all in place (AGENTS.md section 14). The remaining cross-machine pieces — the reachability probe with its `awaiting-machine` backlog blocker, and routing `machine:`-tagged homes through `origin` fast-forward for cross-machine self-update — are later milestones. Everything stays additive: with no machine registry and no routing tags, firstmate behaves exactly as it does on the hub alone.
