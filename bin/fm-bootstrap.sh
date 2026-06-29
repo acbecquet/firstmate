@@ -7,7 +7,14 @@
 #                 "CREW_HARNESS_OVERRIDE: <name>", "FLEET_SYNC: <repo>: skipped: <reason>",
 #                 "TASKS_AXI: available", "TANGLE: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
-#                 "NUDGE_SECONDMATES: <window-targets...>".
+#                 "NUDGE_SECONDMATES: <window-targets...>",
+#                 "MACHINE: <id>: offline (...)".
+#          A MACHINE line reports a registered REMOTE machine the reachability
+#          probe found offline (asleep / off the tailnet); the probe refreshes each
+#          machine's status:/last-seen in data/machines.md and is best-effort and
+#          bounded (FM_MACHINE_PING_BOOTSTRAP_TIMEOUT, default 20s). Online machines
+#          stay quiet. Offline boxes mean: queue any work routed to them with an
+#          awaiting-machine backlog blocker and re-dispatch when they return.
 #          A NUDGE_SECONDMATES line lists the RUNNING secondmate windows whose
 #          worktree was fast-forwarded to firstmate's own current default-branch
 #          commit (a purely LOCAL fast-forward, never an origin fetch) AND whose
@@ -119,6 +126,51 @@ secondmate_sync() {
   return 0
 }
 
+machine_probe() {
+  # Reachability probe (M4): refresh each REMOTE machine's status:/last-seen in
+  # data/machines.md and surface offline boxes so the captain/heartbeat can queue
+  # awaiting-machine work (AGENTS.md §§8, 10, 14). Best-effort and NON-fatal: every
+  # ssh fails fast (BatchMode + ConnectTimeout) and the whole probe is bounded by
+  # FM_MACHINE_PING_BOOTSTRAP_TIMEOUT (default 20s), so a sleeping box never stalls
+  # startup. Only OFFLINE boxes are reported (a MACHINE line each); online stays
+  # quiet. Absent registry or no probe script -> silent no-op (additive).
+  [ -x "$FM_ROOT/bin/fm-machine-ping.sh" ] || return 0
+  [ -f "$FM_HOME/data/machines.md" ] || return 0
+
+  local tmp monitor_was_on pid timeout start
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-machine-ping.XXXXXX" 2>/dev/null) || return 0
+  monitor_was_on=0
+  case $- in *m*) monitor_was_on=1 ;; esac
+  set -m 2>/dev/null || true
+  "$FM_ROOT/bin/fm-machine-ping.sh" >"$tmp" 2>/dev/null &
+  pid=$!
+
+  timeout=${FM_MACHINE_PING_BOOTSTRAP_TIMEOUT:-20}
+  case "$timeout" in ''|*[!0-9]*) timeout=20 ;; esac
+  start=$SECONDS
+  while jobs -r -p | grep -qx "$pid"; do
+    if [ $((SECONDS - start)) -ge "$timeout" ]; then
+      kill -TERM "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
+      echo "MACHINE: probe: skipped: reachability probe timed out"
+      rm -f "$tmp"
+      return 0
+    fi
+    sleep 1
+  done
+  wait "$pid" 2>/dev/null || true
+  [ "$monitor_was_on" -eq 1 ] || set +m 2>/dev/null || true
+
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      *': offline') echo "MACHINE: ${line%: offline}: offline (asleep or unreachable); queue work for it with awaiting-machine and re-dispatch when it returns" ;;
+    esac
+  done < "$tmp"
+  rm -f "$tmp"
+}
+
 install_cmd() {
   case "$1" in
     tmux|node|gh) echo "brew install $1  # or the platform's package manager" ;;
@@ -192,5 +244,6 @@ crew=
 [ -n "$crew" ] && [ "$crew" != "default" ] && echo "CREW_HARNESS_OVERRIDE: $crew"
 fm_tasks_axi_compatible && echo "TASKS_AXI: available"
 secondmate_sync
+machine_probe
 fleet_sync
 exit 0

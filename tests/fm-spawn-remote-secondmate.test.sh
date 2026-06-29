@@ -56,6 +56,7 @@ set -u
 cmd=""
 for cmd; do :; done   # last positional arg is the remote command string
 printf '%s\n' "\$cmd" >> "$log"
+[ -n "\${FAKE_SSH_ALL_FAIL:-}" ] && exit 255   # box asleep / off the tailnet
 case "\$cmd" in
   *"cat > "*charter.md*)              # charter seed write: capture stdin to the box store
     cat > "$store" ;;
@@ -163,7 +164,37 @@ test_remote_spawn_constructs_commands() {
 
   # 7. The spawned line reports the machine for the captain-facing trail.
   assert_contains "$out" "machine=cabin-desktop" "the spawned line names the box"
+
+  # 8. Cross-machine pre-launch sync (M5): the box's firstmate clone is fast-forwarded
+  #    from its own origin OVER THE WIRE before the session is launched.
+  assert_grep "fetch origin" "$log" \
+    "remote spawn must run the box-side pre-launch fast-forward (fetch origin) over the transport"
+  assert_grep "merge --ff-only" "$log" \
+    "the box-side pre-launch sync must be fast-forward-only"
   pass "remote spawn launches the box session under Remote Control and wires routing"
+}
+
+# ---------------------------------------------------------------------------
+# M4 clean failure: an asleep / off-tailnet box aborts the spin-up with a plain
+# "asleep or offline" message that points at the awaiting-machine queue, BEFORE any
+# window is opened or charter seeded — never a confusing mid-spin-up error or hang.
+# ---------------------------------------------------------------------------
+test_offline_box_aborts_clean() {
+  local home fb log err rc
+  home=$(make_remote_home)
+  log="$home/ssh.log"
+  fb=$(make_ssh_stub "$home" "$log")
+  err="$home/err"
+  FAKE_SSH_ALL_FAIL=1 run_remote_spawn "$fb" "$home" cabin-sm claude --secondmate \
+    >/dev/null 2>"$err"; rc=$?
+  expect_code 3 "$rc" "an offline box must abort the spin-up with the awaiting-machine exit code"
+  assert_contains "$(cat "$err")" "asleep or offline" \
+    "the refusal must plainly say the box looks asleep or offline"
+  assert_contains "$(cat "$err")" "awaiting-machine" \
+    "the refusal must point at the awaiting-machine queue"
+  assert_no_grep "new-window" "$log" "no box window may be opened when the box is offline"
+  assert_no_grep "charter.md" "$log" "no charter may be seeded when the box is offline"
+  pass "remote spawn fails cleanly on an offline box (exit 3, awaiting-machine, nothing started)"
 }
 
 # ---------------------------------------------------------------------------
@@ -338,6 +369,7 @@ test_unfilled_charter_aborts_before_launch() {
 }
 
 test_remote_spawn_constructs_commands
+test_offline_box_aborts_clean
 test_registry_machine_routes_first_spawn
 test_unsupported_remote_harness_refused
 test_missing_charter_aborts_before_launch

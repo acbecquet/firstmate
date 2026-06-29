@@ -62,13 +62,24 @@ fi
 
 FF_NUDGE_WINDOWS=""
 FF_SEEN_HOMES=""
+FF_SEEN_REMOTE=""
+MACHINES_BIN="$SCRIPT_DIR/fm-machines.sh"
 
-# Live direct reports first: state/<id>.meta with kind=secondmate carries the
-# authoritative home= path.
+# Live LOCAL direct reports first: state/<id>.meta with kind=secondmate and an
+# empty / hub machine= carries the authoritative home= path. (sweep_live_* now
+# skips non-hub machine= homes - those are remote and handled below.)
 sweep_live_secondmate_metas "$STATE" origin no
 
+# Live REMOTE direct reports (M5): a machine:-tagged home lives on another box with
+# its own object store, so the local fast-forward cannot converge it. It is advanced
+# by running the same guarded origin fast-forward ON THE BOX over the transport.
+sweep_remote_secondmate_metas "$STATE" "$MACHINES_BIN"
+
 # Registry backstop: a secondmate registered in data/secondmates.md but without
-# a live meta (e.g. between restarts) is still its persistent on-disk home.
+# a live meta (e.g. between restarts) is still its persistent on-disk home. A
+# machine:-tagged registry line is routed over the transport like the live remote
+# sweep; a local one takes the local origin fast-forward. Remote ids already covered
+# by a live meta above are skipped (FF_SEEN_REMOTE).
 if [ -f "$SECONDMATES_MD" ]; then
   while IFS= read -r line; do
     case "$line" in
@@ -77,7 +88,20 @@ if [ -f "$SECONDMATES_MD" ]; then
     esac
     id=$(printf '%s\n' "$line" | sed -n 's/^- \([^ ][^ ]*\) - .*/\1/p')
     home=$(printf '%s\n' "$line" | sed -n 's/.*(home:[[:space:]]*\([^;]*\);.*/\1/p' | sed 's/[[:space:]]*$//')
-    process_secondmate "$id" "$home" "" origin no
+    machine=$(printf '%s\n' "$line" | sed -n 's/^.*; machine:[[:space:]]*\([^;)]*\).*/\1/p' | sed 's/[[:space:]]*$//')
+    case "$machine" in
+      ''|hub)
+        process_secondmate "$id" "$home" "" origin no ;;
+      *)
+        case " $FF_SEEN_REMOTE " in *" $id "*) continue ;; esac
+        # The secondmate line's own home: is its home path ON THE BOX and wins;
+        # the machine registry fm-home is only a fallback when the line omits it.
+        rhome=$home
+        [ -n "$rhome" ] || rhome=$("$MACHINES_BIN" get "$machine" fm-home 2>/dev/null || true)
+        prefix=$("$MACHINES_BIN" ssh-prefix "$machine" 2>/dev/null || true)
+        ff_remote_secondmate "$id" "$machine" "$rhome" "$prefix" "secondmate $id"
+        FF_SEEN_REMOTE="$FF_SEEN_REMOTE $id" ;;
+    esac
   done < "$SECONDMATES_MD"
 fi
 

@@ -122,6 +122,7 @@ Otherwise it prints one line per problem or capability fact; handle each:
 - `SECONDMATE_SYNC: secondmate <id>: skipped: <reason>` - the local-HEAD secondmate sync left a live secondmate home on its existing checkout because the home was dirty, diverged, unsafe, on the wrong branch, missing the primary target commit, or otherwise not fast-forwardable; bootstrap continued, but inspect the reason because the secondmate may be stale after a primary update.
 - `TASKS_AXI: available` - an optional capability fact, not a problem; record it silently and use section 10 for backlog mutations.
   It prints only after the `tasks-axi` compatibility probe passes for version 0.1.1 or newer; absence or incompatibility only falls back to hand-editing and never blocks work.
+- `MACHINE: <id>: offline (...)` - the reachability probe (section 14) found a registered remote box asleep or off the tailnet and recorded it offline in the registry; bootstrap continued. Keep any work routed to that box queued with an `awaiting-machine: <id>` blocker (section 10) and re-dispatch when a later probe flips it back online. Online boxes print nothing. This line appears only when a machine registry with remote boxes exists, so a hub-only fleet never sees it.
 - `NUDGE_SECONDMATES: <window-targets...>` - the secondmate sweep fast-forwarded one or more *running* secondmate homes to firstmate's current version and their instructions actually changed; for each listed window, send a one-line re-read nudge with `bin/fm-send.sh <window-target> 'firstmate was updated to the latest - please re-read your AGENTS.md to pick up the new instructions.'` so that secondmate picks up its new instructions.
   This mirrors `/updatefirstmate`'s `nudge-secondmates:` report: it is a gentle steer, never an interruption, and the fast-forward already landed safely.
   A secondmate that was skipped, already current, or whose advance changed no instructions is not listed and must not be disturbed.
@@ -487,7 +488,7 @@ On wake, in order of cheapness:
 3. `stale:` the crewmate stopped without reporting; peek the pane (`bin/fm-peek.sh <window>`) to diagnose.
    If the pane is waiting, looping, confused, or unresponsive, load `stuck-crewmate-recovery`.
 4. `check:` a per-task poll fired (usually a merge); act on it.
-5. `heartbeat:` review the whole fleet: read each crewmate's current state with `bin/fm-crew-state.sh <id>` (the cheap first read - it reconciles the authoritative run-step over a possibly-stale status-log line, so a crewmate whose gate you already resolved no longer reads as still parked), peek panes that look off, check PR-ready tasks for merge, reconcile data/backlog.md, then re-arm the watcher.
+5. `heartbeat:` review the whole fleet: read each crewmate's current state with `bin/fm-crew-state.sh <id>` (the cheap first read - it reconciles the authoritative run-step over a possibly-stale status-log line, so a crewmate whose gate you already resolved no longer reads as still parked), peek panes that look off, check PR-ready tasks for merge, reconcile data/backlog.md, then re-arm the watcher. When the fleet spans machines (section 14), also run `bin/fm-machine-ping.sh` here to refresh each remote box's reachability and re-dispatch any `awaiting-machine` items whose box came back online; the probe is cheap, bounded, and non-fatal, so it costs nothing when there are no remote machines.
    A heartbeat with no captain-relevant change is internal; do not report that the fleet is unchanged.
 
 Heartbeats back off exponentially while they are the only wakes firing (600s doubling to a 2h cap - an idle fleet stops burning turns); any signal, stale, or check wake resets the cadence to the base interval.
@@ -580,6 +581,7 @@ Update it on every dispatch, completion, and decision.
 
 ## Queued
 - [ ] <id> - <one line> (repo: <name>) blocked-by: <id> - <reason>
+- [ ] <id> - <one line> (repo: <name>) awaiting-machine: <machine-id> - <reason>
 
 ## Done
 - [x] <id> - <one line> - <https://github.com/owner/repo/pull/number> (merged <date>)
@@ -587,7 +589,9 @@ Update it on every dispatch, completion, and decision.
 - [x] <id> - <one line> - data/<id>/report.md (reported <date>)
 ```
 
-Re-evaluate Queued on every teardown and every heartbeat: anything whose blocker is gone and whose time/date gate, if any, has arrived gets dispatched.
+`awaiting-machine: <machine-id>` is the multi-machine analog of `blocked-by:` (section 14): work routed to a box that is asleep or off the tailnet is queued with this blocker instead of failing, and firstmate tells the captain the box looks offline rather than hanging.
+It clears when the reachability probe (`bin/fm-machine-ping.sh`, run at bootstrap and on the heartbeat) flips that machine's registry `status:` back to `online`; the heartbeat then re-dispatches the item exactly like a cleared `blocked-by:`.
+Re-evaluate Queued on every teardown and every heartbeat: anything whose blocker is gone (including an `awaiting-machine` box that came back online) and whose time/date gate, if any, has arrived gets dispatched.
 
 A tracked `.tasks.toml` at this repo root pins the `tasks-axi` markdown backend to `data/backlog.md`, with `done_keep = 10` and an archive at `data/done-archive.md`.
 Compatible means the shared bootstrap probe accepts `tasks-axi --version` as 0.1.1 or newer.
@@ -650,7 +654,7 @@ These skills are not captain-invocable; they are conditional operating reference
 
 The fleet is not limited to this hub.
 The captain runs other machines - a desktop, a workstation, other boxes - and firstmate can orchestrate crewmate work on them.
-This section documents the model, the hub-side registry and routing, and the transport adapter and status carry-back that carry work across the wire; the remaining cross-machine pieces (a reachability probe, cross-machine self-update) are forward-referenced below.
+This section documents the model, the hub-side registry and routing, the transport adapter and status carry-back that carry work across the wire, the reachability probe with its offline `awaiting-machine` routing, and cross-machine self-update.
 Everything here is additive: with no machine registry and no routing tags, firstmate behaves exactly as it does today, entirely on the hub.
 
 **The core model: a remote machine is a remote secondmate.**
@@ -671,7 +675,7 @@ The line form is:
 
 - `auth:` is always a reference (a tailnet ACL, an ssh-agent identity, a hub key path), never a credential; secrets live on each box, the hub holds only the reference.
 - `tmux-session:` is authoritative for any remote peek and must be validated, so a remote peek can never read a stranger's pane.
-- `status:`/`last-seen` are maintained by a reachability probe (a later milestone); treat them as a hint, and confirm liveness before relying on a box.
+- `status:`/`last-seen` are maintained by the reachability probe `bin/fm-machine-ping.sh` (run at bootstrap and on the heartbeat; see *Reachability probe and offline routing* below); they are a recent hint, not a live guarantee, so a dispatch still confirms liveness (the spawn path probes the box itself before launching).
 - `transport:` today is `tailscale-ssh` (the captain's chosen substrate): boxes are reachable over the tailnet when online.
 - Like the rest of `data/`, `machines.md` is firstmate-private and gitignored; the committed deliverables are the line format and the parser, not the captain's machine list. Seed examples live in the `bin/fm-machines.sh` header and in `docs/multimachine-onboarding.md`.
 
@@ -726,6 +730,21 @@ It then delivers the charter pointer as a from-firstmate request (the booted Rem
 Recovery (sections 5 and 8) reconciles a remote secondmate the same way it reconciles any persistent direct report - from its carried-back status plus the registry, never by driving its pane - and a `kind=secondmate` window is exempt from stale-pane wakes, so an idle remote box never trips a false stale.
 The §5.1 round-trip - a marked work line routed IN reaching the box, and a status line carried BACK into the hub's local `state/` - is proven deterministically by a mock test (`tests/fm-spawn-remote-secondmate.test.sh`, fake-executor command-string assertions, no real network/tmux) and, on a real box, by the manual harness `tests/m3-roundtrip-live.sh` (a second `FM_HOME` reached over real `ssh localhost`, with every tmux call pinned to a private `-L fm-m3-test` server; it skips cleanly when `ssh localhost` is unusable and tears down only its private server and temp homes).
 
-**Forward references (later milestones, not yet built).**
-The reachability probe (maintaining the registry `status:`/`last-seen` and adding an `awaiting-machine` backlog blocker for offline boxes) and routing `machine:`-tagged homes through the existing `origin` fast-forward mode for cross-machine self-update are later milestones.
-Until they land, those registry fields stay captain-maintained hints, and a `machine:`-tagged secondmate home is self-updated on its own box rather than swept from the hub.
+**Reachability probe and offline routing (`bin/fm-machine-ping.sh`).**
+A personal box may sleep, suspend, reboot, or drop off the tailnet, so the registry `status:`/`last-seen` fields are maintained by a probe rather than left as static hints.
+`bin/fm-machine-ping.sh` probes a registered machine over its transport with a cheap non-interactive `ssh <host> true` and records the result back into `data/machines.md` as the line's `status:` (online|offline) and `last-seen <date>`; the captain-set `reachability:` hint and every other field are untouched, and a missing `status:`/`last-seen` field is inserted rather than left stale.
+It is cheap, bounded, and NON-fatal by construction: the ssh-prefix bakes in `BatchMode` + `ConnectTimeout`, so a sleeping or off-tailnet box fails fast and is recorded offline - never a confusing hang - and every path exits 0, so it is safe to wire into the heartbeat.
+`fm-machine-ping.sh` with no args probes every remote machine (local/hub-transport machines are skipped); `fm-machine-ping.sh <id>...` probes the named machines; `fm-machine-ping.sh check <id>` probes WITHOUT writing the registry and exits 0 online / non-zero offline, for a caller that needs a clean reachability yes/no before routing work.
+Bootstrap runs the probe once per session (best-effort, bounded by `FM_MACHINE_PING_BOOTSTRAP_TIMEOUT`, default 20s) and prints a `MACHINE: <id>: offline ...` line for each offline box (online stays quiet); the heartbeat review (section 8) re-runs it to refresh status and re-dispatch any queued machine work.
+**Offline routing - the `awaiting-machine` backlog blocker.** Routing work to an OFFLINE box does not fail the dispatch.
+The work is queued in `data/backlog.md` with an `awaiting-machine: <machine-id>` blocker (the machine-reachability analog of `blocked-by:`; section 10), and firstmate tells the captain plainly that the box looks asleep/offline instead of hanging or erroring.
+The next probe that flips the box online lets the heartbeat re-dispatch the queued item, exactly like a cleared `blocked-by:`.
+`fm-spawn.sh --secondmate` enforces this at the source: its remote path probes the box first and, when the box is unreachable, aborts cleanly (exit 3) with a message naming the box and the `awaiting-machine` queue, before any window is opened or charter seeded.
+
+**Cross-machine self-update (M5).**
+A `machine:`-tagged secondmate home is a standalone firstmate clone on another box, with its own origin and object store, so the hub's local fast-forward (whether the local-HEAD sync or a local `origin` advance) cannot converge it - the home path is not even on the hub's filesystem.
+Such a home is instead advanced by running the SAME guarded, origin-base, fast-forward-only update ON THE BOX over the transport: `git fetch origin` then `git merge --ff-only origin/<default>`, with the identical guards as the local path (ff-only, never force/merge/stash; skip a dirty, diverged, or wrong-branch home untouched), executed box-side via the ssh-prefix.
+`bin/fm-ff-lib.sh` owns this as `remote_ff_command`/`ff_remote_secondmate`; `/updatefirstmate` (`bin/fm-update.sh`) sweeps live remote-secondmate metas and the registry backstop through it (an advanced remote secondmate whose instruction surface changed is nudged just like a local one), and `fm-spawn.sh --secondmate` runs it as the box-side pre-launch sync so a freshly spun-up remote secondmate starts on the latest version.
+Local secondmate homes stay on today's local no-fetch path, unchanged.
+An unreachable box is a clean skip throughout, never an error.
+The probe, offline routing, and cross-machine update are proven deterministically by mock tests (`tests/fm-machine-ping.test.sh`, `tests/fm-cross-machine-update.test.sh`, and the offline/pre-launch-sync cases in `tests/fm-spawn-remote-secondmate.test.sh` - fake `ssh`, no real network/tmux).
