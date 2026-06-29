@@ -35,7 +35,7 @@ Set `FM_SECONDMATE_CHARTER` to seed from inline charter text when no filled char
 
 The multi-machine fleet registry lives locally in `data/machines.md`; like the rest of `data/`, it is firstmate-private and gitignored.
 Each line records one machine's id, description, and a parenthesised block of `key: value` fields - `host:`, `transport:` (today `tailscale-ssh`), `reachability:`, `fm-home:`, `harness:`, `tmux-session:`, `auth:` (always a reference such as `tailnet-acl`, never a secret), `status:`, and `last-seen <date>`.
-`bin/fm-machines.sh` is the read-only parser: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, and `validate <id>` confirms a well-formed, present machine before it is used as a remote target.
+`bin/fm-machines.sh` is the read-only parser: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, `validate <id>` confirms a well-formed, present machine before it is used as a remote target, and `ssh-prefix <id>` resolves a machine's transport+host into the ssh command words placed before a remote `tmux ...` call (default ssh options overridable via `FM_SSH_OPTS`).
 A project line in `data/projects.md` may carry an optional `@<machine>` tag (before or after the `[mode +yolo]` bracket) so hub-side intake resolves the project to its owning box; `fm-project-mode.sh machine <name>` returns that id, defaulting to `hub`, while the default `fm-project-mode.sh <name>` still prints exactly `<mode> <yolo>`.
 The model, line schema, and onboarding are documented in [`AGENTS.md`](../AGENTS.md) section 14 and [multimachine-onboarding.md](multimachine-onboarding.md).
 

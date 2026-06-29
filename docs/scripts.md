@@ -15,7 +15,9 @@ Each file also starts with a short header comment.
 | `fm-home-seed.sh`        | Lease/provision a secondmate home transactionally, clone projects, initialize gates, and maintain `data/secondmates.md` |
 | `fm-spawn.sh`            | Spawn one task, several `id=repo` pairs, or a persistent secondmate with `--secondmate`; ship/scout spawns require an isolated treehouse worktree; secondmate spawns locally sync the home before launch |
 | `fm-project-mode.sh`     | Resolve a project's delivery mode and `+yolo` flag from `data/projects.md`, plus its optional `@machine` tag (`machine` subcommand) |
-| `fm-machines.sh`         | Parse the `data/machines.md` multi-machine registry: list machine ids, get a field, dump all fields, or validate an id |
+| `fm-machines.sh`         | Parse the `data/machines.md` multi-machine registry: list machine ids, get a field, dump all fields, validate an id, or resolve a machine's `ssh-prefix` transport command words |
+| `fm-transport-lib.sh`    | Resolve a remote-machine target into the `FM_TMUX_SSH` prefix consumed by `fm_tmux` (override > `FM_TARGET_MACHINE` > meta `machine=`), enforcing the stranger-pane guard; sourced by `fm-send.sh` and `fm-peek.sh` so a local target stays unchanged |
+| `fm-status-pull.sh`      | Status carry-back for a remote secondmate: mirror the box's `state/<id>.status` into the hub's local state over ssh, writing only on real change; `arm <id>` wires the pull to the watcher's check cadence |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval                                           |
 | `fm-review-diff.sh`      | Review a crewmate branch against the authoritative base, with optional `--stat` output                              |
 | `fm-marker-lib.sh`       | Shared from-firstmate request marker and detector sourced by `fm-send.sh`, `fm-brief.sh`, and tests                 |
@@ -29,7 +31,7 @@ Each file also starts with a short header comment.
 | `fm-wake-drain.sh`       | Atomically drain queued watcher wakes before handling supervision work, then run the watcher-liveness guard         |
 | `fm-wake-lib.sh`         | Shared durable wake queue and portable lock helpers sourced by the watcher, drain, arm, guard, and daemon          |
 | `fm-send.sh`             | Send one verified literal line (or `--key Escape`) to a direct-report window; exits non-zero on confirmed swallowed Enter; bare `kind=secondmate` targets are marked as from-firstmate; slash commands and codex `$...` skill invocations get popup-settle before Enter; text sends pause `FM_SEND_SETTLE` seconds after success |
-| `fm-tmux-lib.sh`         | Shared tmux pane primitives for busy detection, dim-ghost-aware and border-aware composer detection, and verified submit retry |
+| `fm-tmux-lib.sh`         | Shared tmux pane primitives for busy detection, dim-ghost-aware and border-aware composer detection, and verified submit retry; `fm_tmux` runs tmux locally or, when `FM_TMUX_SSH` is set, transports each call to a remote machine's tmux over ssh with `fm_shquote`-safe argument quoting |
 | `fm-peek.sh`             | Print a bounded tail of a crewmate pane                                                                             |
 | `fm-pr-check.sh`         | Record `pr=` and a verified `pr_head=` when available for a PR-ready task, then arm the watcher's merge poll        |
 | `fm-promote.sh`          | Promote a scout task in place so it becomes a protected ship task                                                   |

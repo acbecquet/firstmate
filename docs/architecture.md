@@ -73,8 +73,9 @@ The `data/secondmates.md` line schema and the secondmate environment variables a
 
 The fleet is not limited to this hub: the captain's other boxes can run crewmate work too, and the model is that a remote machine *is* a remote secondmate.
 Each box runs stock firstmate in its own `FM_HOME`, supervising its own crewmates entirely locally - its own tmux, treehouse worktrees, watcher, lock, and `gh`/no-mistakes auth - while the hub routes one work line in and reads one status line out, with delivery riding GitHub as always.
-This is the additive hub-side foundation (milestone 1): a private, gitignored machine registry `data/machines.md` parsed read-only by `fm-machines.sh` (`list`/`get`/`fields`/`validate`), plus two optional, fully backward-compatible routing tags - a `machine:` field at the end of a `data/secondmates.md` line and an `@<machine>` tag on a `data/projects.md` line.
-Absent tags mean today's local behavior, so these fields are inert metadata until later milestones add the transport, status carry-back, reachability probe, and cross-machine self-update.
+The additive hub-side foundation is a private, gitignored machine registry `data/machines.md` parsed read-only by `fm-machines.sh` (`list`/`get`/`fields`/`validate`/`ssh-prefix`), plus two optional, fully backward-compatible routing tags - a `machine:` field at the end of a `data/secondmates.md` line and an `@<machine>` tag on a `data/projects.md` line.
+On top of it, the transport adapter carries supervision across the wire: `fm_tmux` in `fm-tmux-lib.sh` is byte-for-byte a local `tmux` call until `FM_TMUX_SSH` is set, and `fm-transport-lib.sh` arms that prefix for `fm-send.sh`/`fm-peek.sh` (with the stranger-pane guard) so a remote target routes through `ssh <host> tmux ...`; `fm-status-pull.sh` carries a remote secondmate's status back into the hub's local state on the watcher's check cadence so the existing signal scan wakes on it.
+Absent tags mean today's local behavior, so these fields stay inert until used, and the reachability probe and cross-machine self-update are later milestones.
 The remote-machine-as-secondmate model, the registry and routing schema, the WSL2/`claude remote-control` note, and the per-box onboarding runbook live in [`AGENTS.md`](../AGENTS.md) section 14 and [multimachine-onboarding.md](multimachine-onboarding.md).
 
 ## Project modes are explicit
