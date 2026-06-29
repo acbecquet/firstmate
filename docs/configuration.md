@@ -20,6 +20,8 @@ Personal preferences for one captain's fleet live locally in `data/captain.md`; 
 
 Persistent secondmate routes live locally in `data/secondmates.md`.
 Each line records the secondmate id, charter summary, absolute home path, natural-language scope, project clone list, and added date; `fm-home-seed.sh validate` refuses duplicate ids, duplicate homes, and nested or overlapping homes.
+An optional `machine:` field at the end of the line, after `added`, places the secondmate on a remote box from `data/machines.md`; absent or `hub` means a local secondmate (today's behavior).
+It is placed last so the existing parsers read the line unchanged (multi-machine fleet; see [`AGENTS.md`](../AGENTS.md) section 14).
 The main first mate routes by reading those scopes with judgment; the project list is provisioning data, not exclusive ownership.
 Use `fm-home-seed.sh <id> - <project>...` to lease a fresh firstmate worktree for the secondmate home.
 The lease is held under the secondmate id until explicit retirement or seed rollback returns it, so normal restarts do not free or recycle the home.
@@ -28,6 +30,14 @@ Secondmate routes cover `no-mistakes` and `direct-PR` projects; `local-only` pro
 For `no-mistakes` projects, seeding initializes only projects newly cloned into a secondmate home and refuses to mutate a preexisting clone that is not already initialized.
 After creating a secondmate, move existing main-backlog items that you have judged in-scope with `fm-backlog-handoff.sh <secondmate-id> <item-key>...`; it is idempotent and refuses in-flight items or non-secondmate homes.
 Set `FM_SECONDMATE_CHARTER` to seed from inline charter text when no filled charter brief exists; set `FM_SECONDMATE_SCOPE` when the routing scope should differ from the charter text.
+
+## Machine registry (data/machines.md)
+
+The multi-machine fleet registry lives locally in `data/machines.md`; like the rest of `data/`, it is firstmate-private and gitignored.
+Each line records one machine's id, description, and a parenthesised block of `key: value` fields - `host:`, `transport:` (today `tailscale-ssh`), `reachability:`, `fm-home:`, `harness:`, `tmux-session:`, `auth:` (always a reference such as `tailnet-acl`, never a secret), `status:`, and `last-seen <date>`.
+`bin/fm-machines.sh` is the read-only parser: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, and `validate <id>` confirms a well-formed, present machine before it is used as a remote target.
+A project line in `data/projects.md` may carry an optional `@<machine>` tag (before or after the `[mode +yolo]` bracket) so hub-side intake resolves the project to its owning box; `fm-project-mode.sh machine <name>` returns that id, defaulting to `hub`, while the default `fm-project-mode.sh <name>` still prints exactly `<mode> <yolo>`.
+The model, line schema, and onboarding are documented in [`AGENTS.md`](../AGENTS.md) section 14 and [multimachine-onboarding.md](multimachine-onboarding.md).
 
 ## FM_HOME
 

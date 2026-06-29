@@ -76,6 +76,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   captain.md         captain's curated personal preferences and working style; LOCAL, gitignored, and canonical even if harness memory mirrors it
   projects.md        thin fleet navigation registry; firstmate-private, parsed by fm-project-mode.sh (section 6)
   secondmates.md      secondmate routing table; firstmate-private, maintained by fm-home-seed.sh (section 6)
+  machines.md        multi-machine fleet registry; firstmate-private, parsed by fm-machines.sh (section 14)
   <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
   <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
 projects/            cloned repos; gitignored; READ-ONLY for you
@@ -644,3 +645,60 @@ These skills are not captain-invocable; they are conditional operating reference
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
 - `stuck-crewmate-recovery` - load after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, recovering, handing backlog to, or retiring a secondmate home, and before editing `data/secondmates.md`.
+
+## 14. Multi-machine fleet
+
+The fleet is not limited to this hub.
+The captain runs other machines - a desktop, a workstation, other boxes - and firstmate can orchestrate crewmate work on them.
+This section documents the model and the hub-side registry and routing that make it possible; the transport adapter and remote execution that carry work across the wire are built in later milestones and are forward-referenced below.
+Everything here is additive: with no machine registry and no routing tags, firstmate behaves exactly as it does today, entirely on the hub.
+
+**The core model: a remote machine is a remote secondmate.**
+A secondmate is already a full firstmate running in its own `FM_HOME`, reached through exactly two operations - one marked work line in (`bin/fm-send.sh`), an escalation/status line out (its status file).
+That boundary is the whole seam.
+A remote machine runs stock firstmate in its own home and supervises its own crewmates entirely locally - its own tmux, its own treehouse worktrees of the box's local repos, its own watcher, lock, and `gh`/no-mistakes auth.
+The hub never drives the remote's tmux pane-by-pane; it routes one work line in and reads one status line out, while delivery rides GitHub as it always has.
+This keeps all the high-frequency, timing-sensitive machinery (the file-polling watcher, the PID-ancestry lock) local to each box, where it belongs, and puts the network only on two low-frequency channels.
+Because each box runs vanilla firstmate, the registry and (future) transport land upstream in `bin/` so every machine inherits improvements and `/updatefirstmate` propagation keeps working: this is an EXTEND, not a fork.
+
+**Machine registry - `data/machines.md` (parsed by `bin/fm-machines.sh`).**
+One line per machine, carrying identity, transport, reachability, and an auth *reference* - never a secret.
+The line form is:
+
+```markdown
+- <id> - <desc> (host: <host>; transport: <transport>; reachability: <r>; fm-home: <path>; harness: <harness>; tmux-session: <session>; auth: <reference>; status: <status>; last-seen <date>)
+```
+
+- `auth:` is always a reference (a tailnet ACL, an ssh-agent identity, a hub key path), never a credential; secrets live on each box, the hub holds only the reference.
+- `tmux-session:` is authoritative for any remote peek and must be validated, so a remote peek can never read a stranger's pane.
+- `status:`/`last-seen` are maintained by a reachability probe (a later milestone); treat them as a hint, and confirm liveness before relying on a box.
+- `transport:` today is `tailscale-ssh` (the captain's chosen substrate): boxes are reachable over the tailnet when online.
+- Like the rest of `data/`, `machines.md` is firstmate-private and gitignored; the committed deliverables are the line format and the parser, not the captain's machine list. Seed examples live in the `bin/fm-machines.sh` header and in `docs/multimachine-onboarding.md`.
+
+`bin/fm-machines.sh` reads it: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, and `validate <id>` confirms an id is a well-formed, present machine before it is used as a remote target.
+
+**Routing fields (both optional, both backward compatible).**
+
+- `data/secondmates.md` lines take an optional `machine:` field so a secondmate can live on a remote box. It is placed at the end of the line, after `added`, so the existing parsers read it without change:
+
+  ```markdown
+  - er2-mods - ER2 firmware mods (home: /home/cap/firstmate; scope: ER2 embedded work; projects: er2-mods; added 2026-06-29; machine: cabin-desktop)
+  ```
+
+  Absent or `hub` means a local secondmate - today's behavior. The secondmate's existing `scope:`/`projects:` fields still do all the routing; `machine:` only says where it runs.
+- `data/projects.md` lines take an optional `@<machine>` tag so hub-side intake can resolve a mentioned project to its owning box without reaching across the network during resolution. It may sit before or after the `[mode +yolo]` bracket; absent or `@hub` means the local hub:
+
+  ```markdown
+  - roybot @cabin-desktop [direct-PR] - RoyBot robot controller (added 2026-06-29)
+  ```
+
+  `fm-project-mode.sh <name>` still prints exactly `<mode> <yolo>` (unchanged); `fm-project-mode.sh machine <name>` returns the machine id, defaulting to `hub`.
+
+**Onboarding a box is a manual, machine-local trust step the hub cannot do remotely.**
+The remote machines are Windows, so firstmate runs inside WSL2 (Ubuntu) + tmux on each box; `claude remote-control` keeps that CLI session live in tmux while the captain rides along from claude.ai/code, so there is no separate desktop/CLI session to reconcile.
+Per-box `gh auth login`, the harness first-run trust dialog, and joining the tailnet must be accepted out-of-band before unattended dispatch works.
+The full per-box procedure is `docs/multimachine-onboarding.md`.
+
+**Forward references (later milestones, not yet built).**
+The transport adapter (an SSH indirection so `fm-send`/`fm-peek` reach a remote tmux through config rather than by hand), the status carry-back mechanism, the reachability probe with an `awaiting-machine` backlog blocker for offline boxes, and routing `machine:`-tagged homes through the existing `origin` fast-forward mode for cross-machine self-update are all later milestones.
+Until they land, the registry and routing fields above are inert metadata that change nothing about how firstmate supervises local crewmates today.

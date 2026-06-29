@@ -69,6 +69,14 @@ Only a running secondmate home that actually advanced and changed `AGENTS.md`, `
 
 The `data/secondmates.md` line schema and the secondmate environment variables are documented in [configuration.md](configuration.md).
 
+## Multi-machine fleet
+
+The fleet is not limited to this hub: the captain's other boxes can run crewmate work too, and the model is that a remote machine *is* a remote secondmate.
+Each box runs stock firstmate in its own `FM_HOME`, supervising its own crewmates entirely locally - its own tmux, treehouse worktrees, watcher, lock, and `gh`/no-mistakes auth - while the hub routes one work line in and reads one status line out, with delivery riding GitHub as always.
+This is the additive hub-side foundation (milestone 1): a private, gitignored machine registry `data/machines.md` parsed read-only by `fm-machines.sh` (`list`/`get`/`fields`/`validate`), plus two optional, fully backward-compatible routing tags - a `machine:` field at the end of a `data/secondmates.md` line and an `@<machine>` tag on a `data/projects.md` line.
+Absent tags mean today's local behavior, so these fields are inert metadata until later milestones add the transport, status carry-back, reachability probe, and cross-machine self-update.
+The remote-machine-as-secondmate model, the registry and routing schema, the WSL2/`claude remote-control` note, and the per-box onboarding runbook live in [`AGENTS.md`](../AGENTS.md) section 14 and [multimachine-onboarding.md](multimachine-onboarding.md).
+
 ## Project modes are explicit
 
 `data/projects.md` records each project's delivery mode and optional `+yolo` autonomy flag.
