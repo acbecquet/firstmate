@@ -454,13 +454,14 @@ spawn_remote_secondmate() {
   export FM_TMUX_SSH="$prefix"
   local W="fm-$id" T="$session:fm-$id"
 
-  # Clean-failure reachability gate (M4). Probe the box with a cheap non-interactive
-  # command BEFORE touching its tmux or seeding a charter, so a sleeping / off-tailnet
-  # box yields a plain "looks asleep/offline" message routed to an awaiting-machine
-  # queue, never a confusing mid-spin-up charter-write error or a hang. The ssh-prefix
-  # already bakes in BatchMode + ConnectTimeout, so this fails fast.
-  # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
-  if ! ${prefix} true </dev/null >/dev/null 2>&1; then
+  # Clean-failure reachability gate (M4). Probe the box BEFORE touching its tmux or
+  # seeding a charter, so a sleeping / off-tailnet box yields a plain
+  # "looks asleep/offline" message routed to an awaiting-machine queue, never a
+  # confusing mid-spin-up charter-write error or a hang. Route through
+  # fm-machine-ping.sh's `check` subcommand (probe_machine), which wraps the probe in
+  # `timeout $PING_TIMEOUT` so a box that accepts the connection then stalls post-connect
+  # is bounded — not just the ssh-prefix's ConnectTimeout, which only bounds TCP connect.
+  if ! "$FM_ROOT/bin/fm-machine-ping.sh" check "$machine" >/dev/null 2>&1; then
     echo "error: machine \"$machine\" looks asleep or offline (secondmate $id was NOT started); queue this work in the backlog with \"awaiting-machine: $machine\" and re-dispatch once the box is back (run bin/fm-machine-ping.sh $machine to refresh its status)" >&2
     exit 3
   fi
