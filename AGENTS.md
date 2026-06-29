@@ -650,7 +650,7 @@ These skills are not captain-invocable; they are conditional operating reference
 
 The fleet is not limited to this hub.
 The captain runs other machines - a desktop, a workstation, other boxes - and firstmate can orchestrate crewmate work on them.
-This section documents the model and the hub-side registry and routing that make it possible; the transport adapter and remote execution that carry work across the wire are built in later milestones and are forward-referenced below.
+This section documents the model, the hub-side registry and routing, and the transport adapter and status carry-back that carry work across the wire; the remaining cross-machine pieces (a reachability probe, cross-machine self-update) are forward-referenced below.
 Everything here is additive: with no machine registry and no routing tags, firstmate behaves exactly as it does today, entirely on the hub.
 
 **The core model: a remote machine is a remote secondmate.**
@@ -659,7 +659,7 @@ That boundary is the whole seam.
 A remote machine runs stock firstmate in its own home and supervises its own crewmates entirely locally - its own tmux, its own treehouse worktrees of the box's local repos, its own watcher, lock, and `gh`/no-mistakes auth.
 The hub never drives the remote's tmux pane-by-pane; it routes one work line in and reads one status line out, while delivery rides GitHub as it always has.
 This keeps all the high-frequency, timing-sensitive machinery (the file-polling watcher, the PID-ancestry lock) local to each box, where it belongs, and puts the network only on two low-frequency channels.
-Because each box runs vanilla firstmate, the registry and (future) transport land upstream in `bin/` so every machine inherits improvements and `/updatefirstmate` propagation keeps working: this is an EXTEND, not a fork.
+Because each box runs vanilla firstmate, the registry and transport land upstream in `bin/` so every machine inherits improvements and `/updatefirstmate` propagation keeps working: this is an EXTEND, not a fork.
 
 **Machine registry - `data/machines.md` (parsed by `bin/fm-machines.sh`).**
 One line per machine, carrying identity, transport, reachability, and an auth *reference* - never a secret.
@@ -675,7 +675,7 @@ The line form is:
 - `transport:` today is `tailscale-ssh` (the captain's chosen substrate): boxes are reachable over the tailnet when online.
 - Like the rest of `data/`, `machines.md` is firstmate-private and gitignored; the committed deliverables are the line format and the parser, not the captain's machine list. Seed examples live in the `bin/fm-machines.sh` header and in `docs/multimachine-onboarding.md`.
 
-`bin/fm-machines.sh` reads it: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, and `validate <id>` confirms an id is a well-formed, present machine before it is used as a remote target.
+`bin/fm-machines.sh` reads it: `list` prints every machine id, `get <id> <field>` prints one field, `fields <id>` dumps all of a machine's fields, `validate <id>` confirms an id is a well-formed, present machine before it is used as a remote target, and `ssh-prefix <id>` maps a machine's transport+host to the ssh command words placed before a remote `tmux ...` call (a pure string resolution that never opens a connection; it refuses a local/hub transport and an unsupported one).
 
 **Routing fields (both optional, both backward compatible).**
 
@@ -699,6 +699,23 @@ The remote machines are Windows, so firstmate runs inside WSL2 (Ubuntu) + tmux o
 Per-box `gh auth login`, the harness first-run trust dialog, and joining the tailnet must be accepted out-of-band before unattended dispatch works.
 The full per-box procedure is `docs/multimachine-onboarding.md`.
 
+**Transport adapter - reaching a remote machine's tmux (`bin/fm-tmux-lib.sh` + `bin/fm-transport-lib.sh`).**
+Every firstmate tmux call already funnels through one function, `fm_tmux` in `bin/fm-tmux-lib.sh`, so the wire goes in exactly one place.
+With `FM_TMUX_SSH` empty or unset the call is byte-for-byte `tmux "$@"` - identical argv, identical code path - so all local supervision is unchanged (proven by a byte-identical test).
+When `FM_TMUX_SSH` names a transport command prefix (e.g. `ssh cabin-desktop`), `fm_tmux` instead runs `<prefix> "tmux <shell-quoted args>"`, single-quoting each tmux argument (`fm_shquote`) so ANSI escapes, tmux format strings, spaces, and glyphs survive the remote shell's re-parse intact.
+Because `fm-send`'s verified composer-submit (capture-pane, dim/ghost stripping, retry-until-clear) only ever shells tmux through `fm_tmux`, it works unchanged against a remote tmux.
+`bin/fm-transport-lib.sh` arms that prefix for `fm-send`/`fm-peek`: after they resolve a tmux target, `fm_transport_arm` resolves the target's machine by precedence - an explicit `FM_TMUX_SSH` override (trusted verbatim, for loopback/hand-driven calls) > `FM_TARGET_MACHINE=<id>` > the bare `fm-<id>` target's meta `machine=` - and a target resolving to empty or `hub` stays local (`FM_TMUX_SSH` unset, tmux path unchanged).
+For a registry-resolved machine it exports `FM_TMUX_SSH` from `fm-machines.sh ssh-prefix`, but only after the **stranger-pane guard**: the tmux SESSION component of the target must equal the machine's registry `tmux-session`, or the remote call is refused, so a remote peek can never read a window in a session the registry did not sanction (an explicit `FM_TMUX_SSH` override skips this guard - the caller has taken responsibility).
+
+**Status carry-back - a remote secondmate's status reaching the hub (`bin/fm-status-pull.sh`).**
+A remote secondmate appends its hub-bound status/escalation lines to its OWN home's `state/<id>.status` on the box (the same path the local-secondmate charter retargets escalation to, but on the box, not a shared filesystem).
+`fm-status-pull.sh` pulls that file over the transport (`ssh-prefix <machine>` + a single remote `cat`) and mirrors it into the hub's LOCAL `state/<id>.status`, so the hub watcher's `scan_signals` - an ordinary local size:mtime poll - wakes on the new lines through the normal signal path with no change to the tight watcher loop.
+The network lives ONLY in this script and ONLY on the slow cadence: `fm-status-pull.sh arm <id>` writes `state/<id>.check.sh` so the watcher runs the pull on its check cadence (the same mechanism the merged-PR poll uses), never on the 15s signal/stale poll.
+A pull writes the local file only when the remote content actually changed (atomic temp-then-rename), so an unchanged remote produces no spurious wake; the remote status file is append-only, so the mirror is delta-preserving.
+An unreachable box (asleep / off the tailnet) writes nothing, notes one line to stderr, and still exits 0, so an arming check never errors and the hub keeps the last-known status until the box returns.
+Per-id resolution reads `state/<id>.meta`: `machine=` (a non-hub registered machine), optional `remote_home=` (else the registry `fm-home`), and optional `remote_status=` (else `<remote-home>/state/<id>.status`).
+A hub-pull on the heartbeat cadence is the implemented path because the boxes are reachable from the hub over the tailnet; a remote-initiated push (the box writes the hub's state over the wire) is a viable alternative but is not implemented.
+
 **Forward references (later milestones, not yet built).**
-The transport adapter (an SSH indirection so `fm-send`/`fm-peek` reach a remote tmux through config rather than by hand), the status carry-back mechanism, the reachability probe with an `awaiting-machine` backlog blocker for offline boxes, and routing `machine:`-tagged homes through the existing `origin` fast-forward mode for cross-machine self-update are all later milestones.
-Until they land, the registry and routing fields above are inert metadata that change nothing about how firstmate supervises local crewmates today.
+The reachability probe (maintaining the registry `status:`/`last-seen` and adding an `awaiting-machine` backlog blocker for offline boxes) and routing `machine:`-tagged homes through the existing `origin` fast-forward mode for cross-machine self-update are later milestones.
+Until they land, those registry fields stay captain-maintained hints, and a `machine:`-tagged secondmate home is self-updated on its own box rather than swept from the hub.

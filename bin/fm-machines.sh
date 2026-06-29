@@ -31,9 +31,17 @@
 #   fm-machines.sh get <id> <field>     print one field value for <id>
 #   fm-machines.sh fields <id>          print all of <id>'s fields as key=value
 #   fm-machines.sh validate <id>        exit 0 iff <id> is a valid, present machine
+#   fm-machines.sh ssh-prefix <id>      print the transport command prefix
+#                                       (e.g. "ssh <host>") for reaching <id>
 #
 # Fields: host transport reachability fm-home harness tmux-session auth status
 #         last-seen desc
+#
+# ssh-prefix maps a machine's transport+host to the command words placed before a
+# remote `tmux ...` call: for transport tailscale-ssh|ssh it emits
+# "ssh <FM_SSH_OPTS> <host>". This stays a pure string resolution — it never
+# opens a connection. The emitted prefix is what fm-transport-lib.sh exports as
+# FM_TMUX_SSH so fm_tmux (bin/fm-tmux-lib.sh) transports the call.
 #
 # A missing registry is not fatal: `list` prints nothing and warns to stderr;
 # `get`/`fields`/`validate` exit non-zero. An unknown machine id or an absent
@@ -45,6 +53,13 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/machines.md"
+
+# Default ssh options baked into an ssh-prefix: fail fast and never block on a
+# password prompt, so a sleeping or off-tailnet box fails CLEANLY instead of
+# hanging a supervision call. Override with FM_SSH_OPTS; set FM_SSH_OPTS= (empty)
+# to emit a bare "ssh <host>". Only defaulted when unset, so an explicit empty
+# value is honored.
+FM_SSH_OPTS=${FM_SSH_OPTS--o BatchMode=yes -o ConnectTimeout=8}
 
 # A machine id is a kebab slug: lowercase alphanumerics and hyphens, starting
 # with an alphanumeric. This guards remote-peek targets and registry lookups.
@@ -143,13 +158,36 @@ case "$cmd" in
     fi
     ;;
 
+  ssh-prefix)
+    id=${2:?usage: fm-machines.sh ssh-prefix <id>}
+    if ! valid_id "$id"; then
+      echo "error: \"$id\" is not a valid machine id (lowercase kebab slug expected)" >&2
+      exit 1
+    fi
+    line=$(machine_line "$id") || { echo "error: machine \"$id\" not in registry $REG" >&2; exit 1; }
+    transport=$(extract_field "$line" transport 2>/dev/null || true)
+    host=$(extract_field "$line" host 2>/dev/null || true)
+    [ -n "$host" ] || { echo "error: machine \"$id\" has no host in registry $REG" >&2; exit 1; }
+    case "$transport" in
+      ""|hub|local)
+        echo "error: machine \"$id\" is local (transport=\"$transport\"); no ssh transport prefix" >&2
+        exit 1 ;;
+      tailscale-ssh|ssh)
+        # shellcheck disable=SC2086  # FM_SSH_OPTS is a deliberate word list.
+        printf 'ssh %s%s\n' "${FM_SSH_OPTS:+$FM_SSH_OPTS }" "$host" ;;
+      *)
+        echo "error: machine \"$id\" has unsupported transport \"$transport\" (expected tailscale-ssh|ssh)" >&2
+        exit 1 ;;
+    esac
+    ;;
+
   ""|-h|--help|help)
-    sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'
     [ "$cmd" = "" ] && exit 1 || exit 0
     ;;
 
   *)
-    echo "error: unknown command \"$cmd\" (expected: list|get|fields|validate)" >&2
+    echo "error: unknown command \"$cmd\" (expected: list|get|fields|validate|ssh-prefix)" >&2
     exit 1
     ;;
 esac
