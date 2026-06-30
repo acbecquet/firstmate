@@ -85,6 +85,11 @@ FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watche
 FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals into one wake
 FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT=20   # seconds allowed for bootstrap's best-effort clone refresh
 FM_FLEET_PRUNE=1        # set to 0 to skip pruning local branches whose upstream is gone
+# multi-machine fleet (bin/fm-machine-ping.sh, fm-machines.sh, fm-ff-lib.sh)
+FM_MACHINE_PING_BOOTSTRAP_TIMEOUT=20   # seconds allowed for bootstrap's best-effort reachability probe
+FM_PING_TIMEOUT=10      # seconds allowed per reachability probe before a box is recorded offline
+FM_REMOTE_FF_TIMEOUT=60   # seconds allowed for a box-side cross-machine fast-forward over the transport
+FM_SSH_OPTS='-o BatchMode=yes -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=3'   # ssh options in a machine's ssh-prefix; set empty for a bare "ssh <host>"
 FM_BUSY_REGEX='esc (to )?interrupt|Working\.\.\.'   # busy-pane signatures, shared by watcher and tmux helper
 FM_COMPOSER_IDLE_RE=    # optional empty-composer regex, applied after dim-ghost and border stripping
 FM_SEND_RETRIES=3       # fm-send Enter-retry attempts after typing the line once

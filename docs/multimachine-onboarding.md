@@ -217,8 +217,25 @@ The committed, deterministic proof of the same behavior (no real ssh/tmux) is `t
 
 ## Offline and asleep boxes
 
-A personal box may sleep, suspend, reboot, or drop off the tailnet. The accepted behavior is to **fail cleanly**: firstmate reports plainly that the machine is asleep or unreachable rather than hanging. A remote crewmate that is already running keeps working and can still land its PR through GitHub during a hub-link outage; anything that needs a captain decision, a relayed status, or a hub-side merge waits until the box is reachable again. The reachability probe and the `awaiting-machine` backlog blocker that automate this queue-and-resume are a later milestone (AGENTS.md section 14, forward references).
+A personal box may sleep, suspend, reboot, or drop off the tailnet. The accepted behavior is to **fail cleanly**: firstmate reports plainly that the machine is asleep or unreachable rather than hanging. A remote crewmate that is already running keeps working and can still land its PR through GitHub during a hub-link outage; anything that needs a captain decision, a relayed status, or a hub-side merge waits until the box is reachable again.
+
+The **reachability probe** automates the queue-and-resume:
+
+```sh
+# on the hub
+bin/fm-machine-ping.sh                 # probe + record every remote box's status
+bin/fm-machine-ping.sh cabin-desktop   # probe one box
+bin/fm-machine-ping.sh check cabin-desktop   # yes/no reachability, no registry write
+```
+
+`bin/fm-machine-ping.sh` probes a box with a cheap `ssh <host> true` and records the result into `data/machines.md` as the line's `status:` (online|offline) and `last-seen <date>`; the captain-set `reachability:` hint and every other field are untouched. It is bounded and non-fatal — a sleeping box fails fast (the ssh-prefix bakes in `BatchMode` + `ConnectTimeout`) and is recorded offline. Bootstrap runs it once per session (printing a `MACHINE: <id>: offline` line for each offline box), and the heartbeat review re-runs it.
+
+Work routed to an offline box is **queued, not failed**: firstmate records it in `data/backlog.md` with an `awaiting-machine: <machine-id>` blocker (the machine-reachability analog of `blocked-by:`), tells the captain the box looks offline, and re-dispatches automatically once a later probe flips the box online. `bin/fm-spawn.sh --secondmate` enforces this at the source — its remote path probes the box first and, when it is unreachable, aborts cleanly (exit 3) with a message naming the box and the `awaiting-machine` queue, before any window is opened or charter seeded.
+
+## Cross-machine self-update
+
+A box's firstmate home is a standalone clone with its own origin, so `/updatefirstmate` keeps it current over the transport. When a secondmate's `data/secondmates.md` line carries a `machine:` tag (or its live meta records `machine=`), `bin/fm-update.sh` advances that box's clone by running the same guarded, fast-forward-only origin update **on the box** — `git fetch origin` then `git merge --ff-only origin/<default>`, with the identical guards as a local home (skip a dirty, diverged, or wrong-branch box untouched). A box that advanced and whose instructions changed is nudged to re-read, exactly like a local secondmate. `bin/fm-spawn.sh --secondmate` runs the same box-side fast-forward as a pre-launch sync, so a freshly spun-up remote secondmate starts on the latest version. An unreachable box is a clean skip, never an error. Local secondmate homes stay on the local fast-forward path, unchanged.
 
 ## What this milestone does and does not include
 
-This runbook, the registry/routing fields, the transport that carries `fm-send`/`fm-peek` to a remote tmux, the status carry-back that surfaces a remote escalation into the hub's watcher, and the hub-driven remote secondmate spin-up under Remote Control (`fm-spawn.sh --secondmate`) are all in place (AGENTS.md section 14). The remaining cross-machine pieces — the reachability probe with its `awaiting-machine` backlog blocker, and routing `machine:`-tagged homes through `origin` fast-forward for cross-machine self-update — are later milestones. Everything stays additive: with no machine registry and no routing tags, firstmate behaves exactly as it does on the hub alone.
+This runbook, the registry/routing fields, the transport that carries `fm-send`/`fm-peek` to a remote tmux, the status carry-back that surfaces a remote escalation into the hub's watcher, the hub-driven remote secondmate spin-up under Remote Control (`fm-spawn.sh --secondmate`), the reachability probe with its `awaiting-machine` offline routing, and cross-machine self-update of `machine:`-tagged homes over the transport are all in place (AGENTS.md section 14). Everything stays additive: with no machine registry and no routing tags, firstmate behaves exactly as it does on the hub alone.

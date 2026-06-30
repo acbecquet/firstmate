@@ -453,6 +453,32 @@ spawn_remote_secondmate() {
   # Arm the transport: every fm_tmux below runs `<prefix> "tmux ..."` on the box.
   export FM_TMUX_SSH="$prefix"
   local W="fm-$id" T="$session:fm-$id"
+
+  # Clean-failure reachability gate (M4). Probe the box BEFORE touching its tmux or
+  # seeding a charter, so a sleeping / off-tailnet box yields a plain
+  # "looks asleep/offline" message routed to an awaiting-machine queue, never a
+  # confusing mid-spin-up charter-write error or a hang. Route through
+  # fm-machine-ping.sh's `check` subcommand (probe_machine), which wraps the probe in
+  # `timeout $PING_TIMEOUT` so a box that accepts the connection then stalls post-connect
+  # is bounded — not just the ssh-prefix's ConnectTimeout, which only bounds TCP connect.
+  if ! "$FM_ROOT/bin/fm-machine-ping.sh" check "$machine" >/dev/null 2>&1; then
+    echo "error: machine \"$machine\" looks asleep or offline (secondmate $id was NOT started); queue this work in the backlog with \"awaiting-machine: $machine\" and re-dispatch once the box is back (run bin/fm-machine-ping.sh $machine to refresh its status)" >&2
+    exit 3
+  fi
+
+  # Cross-machine pre-launch sync (M5). Bring the box's firstmate clone up to its own
+  # origin/<default> over the transport before launching the session, so a freshly
+  # spun-up remote secondmate runs the latest version - the remote analog of the local
+  # pre-launch fast-forward. Standalone-clone box home with its own object store, so the
+  # local no-fetch sync cannot reach it; this runs the same guarded origin fast-forward
+  # ON THE BOX. Non-fatal: a skip just launches the box on its current version. The
+  # session re-reads AGENTS.md fresh on launch, so no nudge is needed at spawn.
+  local sm_remote_ff
+  sm_remote_ff=$(ff_remote_secondmate "$id" "$machine" "$rhome" "$prefix" "secondmate $id" 2>&1 || true)
+  case "$sm_remote_ff" in
+    *': skipped:'*) echo "warning: remote secondmate $id pre-launch sync skipped: ${sm_remote_ff#*: skipped: }" >&2 ;;
+  esac
+
   # Refuse a duplicate window on the box (mirrors the local window-exists guard).
   if fm_tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null | grep -qx "$W"; then
     echo "error: remote window $T already exists on machine \"$machine\"" >&2

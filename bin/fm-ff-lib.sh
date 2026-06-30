@@ -375,15 +375,176 @@ process_secondmate() {
 # kind=secondmate - fast-forwarding each to base_mode. Passes base_mode and
 # nudge_requires_instr through to process_secondmate. Accumulates into
 # FF_NUDGE_WINDOWS / FF_SEEN_HOMES, which the caller resets before and reads after.
+#
+# A meta with a non-hub `machine=` is a REMOTE secondmate whose home lives on
+# another box's separate object store; the local fast-forward here (whether the
+# local-HEAD or origin base mode) cannot reach or converge it - its home path is
+# not even on this filesystem. Those are skipped silently and handled instead by
+# the cross-machine update path (sweep_remote_secondmate_metas + ff_remote_secondmate,
+# run over the transport). Empty / hub machine= is a local home and processed here.
 sweep_live_secondmate_metas() {
-  local state=$1 base_mode=$2 nudge_requires_instr=${3:-no} meta id home window
+  local state=$1 base_mode=$2 nudge_requires_instr=${3:-no} meta id home window machine
   [ -d "$state" ] || return 0
   for meta in "$state"/*.meta; do
     [ -f "$meta" ] || continue
     grep -q '^kind=secondmate' "$meta" 2>/dev/null || continue
+    machine=$(grep '^machine=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    case "$machine" in
+      ''|hub) ;;
+      *) continue ;;
+    esac
     id=$(basename "$meta" .meta)
     home=$(grep '^home=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
     window=$(grep '^window=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
     process_secondmate "$id" "$home" "$window" "$base_mode" "$nudge_requires_instr"
+  done
+}
+
+# --- cross-machine self-update (M5) ----------------------------------------
+#
+# A REMOTE secondmate home is a STANDALONE clone of firstmate on another box, with
+# its own origin and its own object store. The local fast-forward modes above
+# cannot converge it (no shared objects, and the path is not on this host), so a
+# machine:-tagged home is advanced by running the SAME guarded, fast-forward-only,
+# origin-base update ON THE BOX over the transport: fetch origin, then ff HEAD to
+# origin/<default>. The guards mirror ff_target's origin mode exactly - ff-only,
+# never force/merge/stash; skip a dirty, diverged, or wrong-branch home untouched -
+# but they run box-side. Detached HEAD on the default branch (how a leased home
+# legitimately sits) is allowed.
+
+# Single-quote-escape one argument for safe reuse inside the box-side script.
+_ff_shquote() {  # <arg>
+  local s=$1
+  printf "'%s'" "$(printf '%s' "$s" | sed "s/'/'\\\\''/g")"
+}
+
+# Build the box-side guarded fast-forward script for a remote firstmate home. The
+# home path is substituted (shell-quoted) HERE on the hub; everything else stays a
+# literal the BOX shell expands, so $default/$base/etc resolve on the box. Prints
+# exactly one terminal status line to box stdout: "current", "updated <a>..<b>
+# instr=yes|no", or "skipped: <reason>".
+remote_ff_command() {  # <remote-home>
+  local sq_home
+  sq_home=$(_ff_shquote "$1")
+  printf 'cd %s 2>/dev/null || { echo "skipped: not a directory"; exit 0; }\n' "$sq_home"
+  cat <<'EOF'
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "skipped: not a git repo"; exit 0; }
+default=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+if [ -z "$default" ]; then for b in main master; do if git show-ref --verify --quiet "refs/heads/$b"; then default=$b; break; fi; done; fi
+[ -n "$default" ] || { echo "skipped: cannot determine default branch"; exit 0; }
+git remote get-url origin >/dev/null 2>&1 || { echo "skipped: no origin remote"; exit 0; }
+git fetch origin --prune --quiet 2>/dev/null || { echo "skipped: fetch failed"; exit 0; }
+base="origin/$default"
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || { echo "skipped: $base does not exist"; exit 0; }
+cur=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [ -n "$cur" ] && [ "$cur" != "$default" ]; then echo "skipped: on $cur, expected $default"; exit 0; fi
+dirty=$(git status --porcelain 2>/dev/null | grep -v '^?? \.fm-secondmate-home$' | head -1)
+[ -z "$dirty" ] || { echo "skipped: dirty working tree"; exit 0; }
+local_rev=$(git rev-parse HEAD 2>/dev/null) || { echo "skipped: cannot read HEAD"; exit 0; }
+base_rev=$(git rev-parse "$base" 2>/dev/null) || { echo "skipped: cannot read base"; exit 0; }
+if [ "$local_rev" = "$base_rev" ]; then echo "current"; exit 0; fi
+git merge-base --is-ancestor HEAD "$base" 2>/dev/null || { echo "skipped: diverged from $base"; exit 0; }
+instr=no
+git diff --quiet HEAD "$base" -- AGENTS.md bin .agents/skills 2>/dev/null || instr=yes
+before=$(git rev-parse --short HEAD)
+git merge --ff-only "$base" >/dev/null 2>&1 || { echo "skipped: fast-forward failed"; exit 0; }
+after=$(git rev-parse --short HEAD)
+echo "updated $before..$after instr=$instr"
+EOF
+}
+
+# Fast-forward one REMOTE secondmate home over the transport. Args:
+#   id machine remote-home ssh-prefix [label]
+# ssh-prefix is the caller-resolved transport command word list (from
+# fm-machines.sh ssh-prefix). Prints one status line and sets the same globals as
+# ff_target: FF_STATUS = updated|current|skipped and FF_INSTR (the changed
+# instruction surface, set only when an update changed AGENTS.md/bin/skills). An
+# unreachable box or a transport failure is a clean skip, never an error.
+ff_remote_secondmate() {  # id machine remote-home ssh-prefix [label]
+  local id=$1 machine=$2 home=$3 prefix=$4 label=${5:-secondmate $1}
+  FF_STATUS="skipped"
+  FF_INSTR=""
+  if [ -z "$prefix" ]; then
+    echo "$label: skipped: no transport prefix for machine \"$machine\""
+    return 0
+  fi
+  if [ -z "$home" ]; then
+    echo "$label: skipped: no remote home recorded"
+    return 0
+  fi
+  local cmd out line
+  cmd=$(remote_ff_command "$home")
+  # Wall-clock bound on the whole box-side run. The ssh-prefix bakes in
+  # ConnectTimeout (TCP connect only), so a reachable box whose own `git fetch
+  # origin` stalls mid-transfer would otherwise hang this ssh indefinitely; the
+  # timeout caps that post-connect stall and turns it into the same clean skip as
+  # an unreachable box, honoring this function's "never an error" contract. Bounded
+  # but generous since a fetch transfers data. Mirrors fm-machine-ping.sh's guard.
+  local ff_timeout=${FM_REMOTE_FF_TIMEOUT:-60}
+  # shellcheck disable=SC2086  # prefix is a deliberate ssh command word list.
+  if command -v timeout >/dev/null 2>&1; then
+    out=$(timeout "$ff_timeout" ${prefix} "$cmd" </dev/null 2>/dev/null)
+  else
+    out=$(${prefix} "$cmd" </dev/null 2>/dev/null)
+  fi || {
+    echo "$label: skipped: machine \"$machine\" unreachable"
+    return 0
+  }
+  line=$(printf '%s\n' "$out" | grep -E '^(current|updated |skipped:)' | tail -1)
+  case "$line" in
+    current)
+      FF_STATUS="current"
+      echo "$label: already current" ;;
+    updated\ *)
+      FF_STATUS="updated"
+      local rest=${line#updated } range instr
+      range=${rest%% instr=*}
+      instr=${rest##*instr=}
+      [ "$instr" = yes ] && FF_INSTR="AGENTS.md, bin, .agents/skills"
+      if [ -n "$FF_INSTR" ]; then
+        echo "$label: updated $range (instructions changed: $FF_INSTR)"
+      else
+        echo "$label: updated $range"
+      fi ;;
+    skipped:*)
+      echo "$label: $line" ;;
+    *)
+      echo "$label: skipped: machine \"$machine\" gave no recognizable response" ;;
+  esac
+  return 0
+}
+
+# Sweep this home's LIVE REMOTE secondmate direct reports - state/<id>.meta with
+# kind=secondmate AND a non-hub machine= - fast-forwarding each on its box over the
+# transport. Resolves the per-machine ssh-prefix and remote home via the registry
+# parser at <machines-bin>. Accumulates an updated remote secondmate's window into
+# FF_NUDGE_WINDOWS when its instruction surface changed and a live window exists, so
+# the caller can nudge it to re-read - exactly like the local sweep. The hub never
+# touches a box home directly; the box self-updates from its own origin.
+# Remote ids already processed this sweep, so a registry backstop can skip a remote
+# secondmate that already had a live meta. The caller resets it before the sweep.
+FF_SEEN_REMOTE=""
+sweep_remote_secondmate_metas() {  # <state> <machines-bin>
+  local state=$1 machines=$2 meta id machine home window prefix rhome
+  [ -d "$state" ] || return 0
+  [ -x "$machines" ] || return 0
+  for meta in "$state"/*.meta; do
+    [ -f "$meta" ] || continue
+    grep -q '^kind=secondmate' "$meta" 2>/dev/null || continue
+    machine=$(grep '^machine=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    case "$machine" in
+      ''|hub) continue ;;
+    esac
+    id=$(basename "$meta" .meta)
+    window=$(grep '^window=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    rhome=$(grep '^remote_home=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$rhome" ] || rhome=$(grep '^home=' "$meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+    [ -n "$rhome" ] || rhome=$("$machines" get "$machine" fm-home 2>/dev/null || true)
+    prefix=$("$machines" ssh-prefix "$machine" 2>/dev/null || true)
+    ff_remote_secondmate "$id" "$machine" "$rhome" "$prefix" "secondmate $id"
+    FF_SEEN_REMOTE="$FF_SEEN_REMOTE $id"
+    if [ "$FF_STATUS" = "updated" ] && [ -n "$window" ] && [ -n "$FF_INSTR" ]; then
+      FF_NUDGE_WINDOWS="$FF_NUDGE_WINDOWS $window"
+    fi
   done
 }

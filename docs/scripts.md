@@ -18,6 +18,7 @@ Each file also starts with a short header comment.
 | `fm-machines.sh`         | Parse the `data/machines.md` multi-machine registry: list machine ids, get a field, dump all fields, validate an id, or resolve a machine's `ssh-prefix` transport command words |
 | `fm-transport-lib.sh`    | Resolve a remote-machine target into the `FM_TMUX_SSH` prefix consumed by `fm_tmux` (override > `FM_TARGET_MACHINE` > meta `machine=`), enforcing the stranger-pane guard; sourced by `fm-send.sh` and `fm-peek.sh` so a local target stays unchanged |
 | `fm-status-pull.sh`      | Status carry-back for a remote secondmate: mirror the box's `state/<id>.status` into the hub's local state over ssh, writing only on real change; `arm <id>` wires the pull to the watcher's check cadence |
+| `fm-machine-ping.sh`     | Reachability probe (M4): `ssh <host> true` over a machine's transport, recording `status:`/`last-seen` into `data/machines.md` (cheap, bounded, non-fatal); no-arg probes every remote box, `<id>...` named ones, `check <id>` probes without writing for a clean yes/no. Wired into bootstrap and the heartbeat; offline boxes route work to an `awaiting-machine` blocker |
 | `fm-merge-local.sh`      | Fast-forward a `local-only` project's local default branch after approval                                           |
 | `fm-review-diff.sh`      | Review a crewmate branch against the authoritative base, with optional `--stat` output                              |
 | `fm-marker-lib.sh`       | Shared from-firstmate request marker and detector sourced by `fm-send.sh`, `fm-brief.sh`, and tests                 |
@@ -26,7 +27,7 @@ Each file also starts with a short header comment.
 | `fm-supervise-daemon.sh` | Presence-gated sub-supervisor for walk-away (`/afk`) supervision: wraps `fm-watch.sh`, self-handles routine wakes in bash, and escalates only captain-relevant events as one verified, batched, single-line digest prefixed with a sentinel marker |
 | `fm-crew-state.sh`       | Print one stable current-state line for a crew by reconciling its matching no-mistakes run-step, even when the pane has closed, with pane and status-log fallback |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification sourced by bootstrap and guard         |
-| `fm-ff-lib.sh`           | Shared guarded fast-forward helper for `/updatefirstmate` origin pulls and no-fetch local secondmate syncs         |
+| `fm-ff-lib.sh`           | Shared guarded fast-forward helper for `/updatefirstmate` origin pulls, no-fetch local secondmate syncs, and the box-side cross-machine fast-forward (`remote_ff_command`/`ff_remote_secondmate`) advancing a `machine:`-tagged home over the transport |
 | `fm-tasks-axi-lib.sh`    | Shared `tasks-axi` compatibility probe sourced by bootstrap and teardown                                            |
 | `fm-wake-drain.sh`       | Atomically drain queued watcher wakes before handling supervision work, then run the watcher-liveness guard         |
 | `fm-wake-lib.sh`         | Shared durable wake queue and portable lock helpers sourced by the watcher, drain, arm, guard, and daemon          |
