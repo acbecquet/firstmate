@@ -501,6 +501,12 @@ A secondmate may be sitting on its own watcher with no visible pane changes, so 
 `fm-watch.sh` therefore skips stale-pane wakes for windows whose meta records `kind=secondmate`.
 This exception is narrow: ordinary crewmates still trip stale detection when their pane stops changing without a busy signature.
 
+A bare turn-end touch is debounced against the crew pane: it wakes only when the pane is not currently showing the busy signature.
+Modern harness agents chain many short turns while driving long background work, and a turn-end wake on a still-busy crewmate is a no-op that costs a full turn, so a busy pane means the crewmate already chained into its next turn and the signal is consumed - its `.seen-*` signature advances with no wake and no `.wake-queue` record.
+Consumption is safe because every path out of busy still reaches you: the next turn's end touches the marker again as a fresh signature to re-evaluate, and a pane that settles idle without another turn-end trips the stale scan, whose wake the busy signature was the only thing suppressing.
+The suppression is narrow and fails open: only `*.turn-ended` files are ever candidates, a `needs-decision`/`blocked`/`done`/`failed` status write always wakes even against a busy pane, `kind=secondmate` turn-ends are never suppressed (their windows are exempt from the stale scan, so nothing would backstop them), and any ambiguous read - missing meta, missing window, unreadable pane - falls back to waking.
+A consumed busy turn-end is still observed crew activity, so it resets the heartbeat cadence to the base interval and clears that window's stale dedup, without otherwise waking you.
+
 **Watcher liveness is guarded, not just disciplined.**
 Arming the watcher is the last action of every wake-handling turn - but the protocol no longer relies on remembering that.
 While running, `fm-watch.sh` touches `state/.last-watcher-beat` every poll cycle.

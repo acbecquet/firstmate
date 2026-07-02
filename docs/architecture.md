@@ -15,6 +15,8 @@ Routine watcher polling, re-arm no-ops, elapsed waiting time, and unchanged hear
 Crew status files are append-only wake-event logs, not current-state fields.
 `bin/fm-crew-state.sh <id>` is the cheap current-state read for heartbeat review: it attributes the matching no-mistakes run, active or terminal, to the crew's own branch and keeps that run-step authoritative even if the pane has closed.
 Only when no matching run exists does it fall back to the pane busy-signature and then the status log; a dead pane without a run reports unknown instead of trusting a stale log.
+A bare turn-end touch is debounced against the crew pane: when the pane still shows the harness busy signature the crewmate has already chained into its next turn, so the touch is consumed with no wake and no queue record rather than firing a no-op wake that would cost the first mate a full turn.
+Consumption is safe because the next turn-end re-evaluates a fresh signature and a pane that settles idle without another turn-end is caught by the stale scan; only `*.turn-ended` files are ever suppressed, while `needs-decision`, `blocked`, `done`, and `failed` status writes, `kind=secondmate` turn-ends, and any unreadable pane always wake.
 
 Routine re-arms go through `bin/fm-watch-arm.sh`, which forks the watcher as a tracked child, verifies it is genuinely alive with a fresh liveness beacon, and prints exactly one honest status line (`started` / `healthy` / `FAILED`, the last exiting non-zero) - never a false `already running` off a dying process.
 Its `--restart` mode signals only the watcher recorded in the current home's `state/.watch.lock`, so restarting one home cannot kill sibling secondmate watchers.
