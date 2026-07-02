@@ -9,6 +9,23 @@
 # For normal supervision, re-arm after each wake by running bin/fm-watch-arm.sh
 # through the harness's tracked background mechanism. Direct duplicate
 # invocations of this script still no-op through the watcher singleton lock.
+#
+# Turn-end debounce: a bare <id>.turn-ended touch wakes only when the crew pane
+# is NOT currently showing the harness busy signature (BUSY_REGEX, same
+# footer-area rule as the stale scan). Modern agents chain many short turns
+# while driving long background work, and each turn-end wake on a still-busy
+# crewmate is a no-op costing firstmate a full turn. A busy pane means the
+# crewmate already started its next turn, so the signal is CONSUMED: its
+# .seen-* signature advances with no wake and no queue record. Consumption is
+# safe because every path out of "busy" still reaches firstmate - the next
+# turn's end touches the marker again (a fresh signature, re-evaluated then),
+# and a pane that settles idle without another turn-end is caught by the
+# existing stale scan, whose wake the busy signature was suppressing anyway.
+# Status-file writes always wake regardless of pane state: needs-decision,
+# blocked, done, and failed must never be delayed. kind=secondmate turn-ends
+# are never suppressed - secondmate windows are exempt from the stale scan, so
+# no settled-idle backstop covers them (fm-spawn installs no turn-end hook for
+# them anyway) - and a missing meta, window, or pane also falls back to waking.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +97,37 @@ BUSY_REGEX=${FM_BUSY_REGEX:-'esc (to )?interrupt|Working\.\.\.'}
 
 hash_pane() {
   if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | cut -d' ' -f1; fi
+}
+
+# Busy check shared by the stale scan and the turn-end debounce. Reads a pane
+# capture on stdin; 0 when the busy signature shows. The match runs on the last
+# 6 non-blank lines only (the TUI footer area, where every verified harness
+# renders its busy indicator) so busy-looking strings in displayed content
+# cannot suppress a wake.
+pane_busy_tail() {
+  grep -v '^[[:space:]]*$' | tail -6 | grep -qiE "$BUSY_REGEX"
+}
+
+# turnend_suppressed <file>: 0 (suppress) only for a bare <id>.turn-ended whose
+# task meta names a non-secondmate window whose pane currently shows the busy
+# signature (see header: turn-end debounce). Everything else - a status file, a
+# missing meta or window, an unreadable pane, kind=secondmate - returns 1
+# (wake), so suppression triggers only on a positive busy read.
+turnend_suppressed() {
+  local f=$1 id meta w kind tail40
+  case "$f" in
+    *.turn-ended) ;;
+    *) return 1 ;;
+  esac
+  id=$(basename "$f" .turn-ended)
+  meta="$STATE/$id.meta"
+  [ -e "$meta" ] || return 1
+  kind=$(grep '^kind=' "$meta" | cut -d= -f2- || true)
+  [ "$kind" = secondmate ] && return 1
+  w=$(grep '^window=' "$meta" | cut -d= -f2- || true)
+  [ -n "$w" ] || return 1
+  tail40=$(tmux capture-pane -p -t "$w" -S -40 2>/dev/null) || return 1
+  printf '%s' "$tail40" | pane_busy_tail
 }
 
 window_kind() {
@@ -210,27 +258,42 @@ while :; do
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
-    files=""
+    # Partition changed files into wakes and busy-pane turn-end suppressions
+    # (see header: turn-end debounce). The busy read happens here, after the
+    # grace re-scan, so the decision uses the pane's current state. Suppressed
+    # files are consumed below: their .seen-* advances with no wake and no
+    # queue record; real wakes still enqueue before any marker advances.
+    files="" suppressed=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue
-      case " $files " in *" $f "*) ;; *) files="$files $f" ;; esac
+      case " $files $suppressed " in *" $f "*) continue ;; esac
+      if turnend_suppressed "$f"; then
+        suppressed="$suppressed $f"
+      else
+        files="$files $f"
+      fi
     done <<EOF
 $pending
 EOF
-    reason="signal:$files"
-    while IFS=$(printf '\t') read -r sf sig f; do
-      [ -n "$sf" ] || continue
-      fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
-    done <<EOF
+    if [ -n "$files" ]; then
+      reason="signal:$files"
+      while IFS=$(printf '\t') read -r sf sig f; do
+        [ -n "$sf" ] || continue
+        case " $suppressed " in *" $f "*) continue ;; esac
+        fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+      done <<EOF
 $pending
 EOF
+    fi
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue
       printf '%s' "$sig" > "$sf"
     done <<EOF
 $pending
 EOF
-    wake "$reason"
+    if [ -n "$files" ]; then
+      wake "$reason"
+    fi
   fi
 
   # Layer 1 backbone: pane staleness. Two consecutive identical hashes with no busy
@@ -250,10 +313,7 @@ EOF
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
-      # Busy match runs on the last 6 non-blank lines only (the TUI footer area,
-      # where every verified harness renders its busy indicator) so busy-looking
-      # strings in displayed content cannot suppress stale detection.
-      if [ "$n" -ge 2 ] && ! printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -6 | grep -qiE "$BUSY_REGEX"; then
+      if [ "$n" -ge 2 ] && ! printf '%s' "$tail40" | pane_busy_tail; then
         if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
           fm_wake_append stale "$w" "stale: $w" || exit 1
           printf '%s' "$h" > "$sf"
