@@ -29,7 +29,8 @@ Its injection path shares `bin/fm-tmux-lib.sh` with `fm-send.sh`, so dim-ghost-a
 ## Worktrees, not branches in your checkout
 
 Crewmates never intentionally touch your project clone; [treehouse](https://github.com/kunchenguid/treehouse) pools clean worktrees so parallel tasks on one repo cannot collide.
-For ship and scout work, `fm-spawn.sh` waits for `treehouse get` and then refuses to launch unless the pane resolves to a real git worktree root that is distinct from the project primary checkout.
+For ship and scout work, `fm-spawn.sh` waits for `treehouse get` and then refuses to launch unless the pane resolves to a real git worktree root of the project repo - one sharing the project clone's git common dir - that is distinct from the project primary checkout, the firstmate primary checkout, and the firstmate home.
+A pane-cwd startup transient parked in a foreign git toplevel (such as the tmux server's own cwd, which for firstmate's session is its primary checkout) is polled past rather than latched, so it never lands in `state/<id>.meta` or gets a turn-end hook.
 
 The firstmate repo has one extra exposure because it can dispatch crewmates to work on itself.
 Its operating checkout (`FM_ROOT`) and the disposable crewmate worktrees are all linked git worktrees of the same repository, so the valid discriminator is branch state, not whether the checkout is linked.
