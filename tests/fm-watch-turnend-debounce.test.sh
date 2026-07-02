@@ -168,9 +168,68 @@ test_settled_idle_backstop_fires_stale() {
   pass "suppressed turn-end followed by genuine idleness still wakes via the stale backstop"
 }
 
+test_suppressed_turnend_resets_heartbeat_streak() {
+  local dir state fakebin out capture window i
+  dir=$(make_case turnend-streak-reset)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  capture="$dir/pane.txt"
+  window="test:fm-task"
+  printf '%s\n' "$BUSY_PANE" > "$capture"
+  fm_write_meta "$state/task.meta" "window=$window" "kind=ship" "harness=claude"
+  # A backed-off heartbeat cadence left over from a prior idle stretch. Consuming
+  # a busy turn-end is observed crew activity and must reset it to the base
+  # interval, otherwise heartbeat latency keeps growing during active work.
+  printf '5\n' > "$state/.heartbeat-streak"
+  touch "$state/task.turn-ended"
+  # Default FM_HEARTBEAT (999999) keeps the heartbeat from firing, so the only
+  # thing that can zero the streak is the debounce consuming the busy turn-end.
+  run_watch "$state" "$fakebin" "$capture" "$window" "$out"
+  i=0
+  until [ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo x)" = 0 ]; do
+    sleep 0.1
+    i=$((i + 1))
+    [ "$i" -lt 100 ] || { kill "$WATCH_PID" 2>/dev/null; fail "consuming a busy turn-end did not reset the heartbeat streak"; }
+  done
+  kill "$WATCH_PID" 2>/dev/null || true
+  wait "$WATCH_PID" 2>/dev/null || true
+  pass "consuming a busy turn-end resets the heartbeat backoff cadence"
+}
+
+test_consumed_turnend_clears_stale_dedup() {
+  local dir state fakebin out capture window stalekey i
+  dir=$(make_case turnend-stale-clear)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  capture="$dir/pane.txt"
+  window="test:fm-task"
+  stalekey="$state/.stale-test_fm-task"
+  printf '%s\n' "$BUSY_PANE" > "$capture"
+  fm_write_meta "$state/task.meta" "window=$window" "kind=ship" "harness=claude"
+  # The stale scan already reported this idle screen once, so its dedup marker
+  # remembers that hash. A byte-identical re-settle after a consumed turn-end
+  # would be swallowed unless consumption drops the marker.
+  printf '%s' "$(hash_text "$IDLE_PANE")" > "$stalekey"
+  touch "$state/task.turn-ended"
+  run_watch "$state" "$fakebin" "$capture" "$window" "$out"
+  i=0
+  until [ ! -e "$stalekey" ]; do
+    sleep 0.1
+    i=$((i + 1))
+    [ "$i" -lt 100 ] || { kill "$WATCH_PID" 2>/dev/null; fail "consuming the busy turn-end did not clear the window's stale dedup"; }
+  done
+  printf '%s\n' "$IDLE_PANE" > "$capture"
+  wait_for_exit "$WATCH_PID" 150 || fail "watcher did not re-fire stale after settling into a previously-reported state"
+  grep -Fx "stale: $window" "$out" >/dev/null \
+    || fail "re-settled idle pane did not re-fire the stale backstop: $(cat "$out")"
+  pass "consuming a busy turn-end clears the stale dedup so a re-settled idle state still wakes"
+}
+
 test_busy_pane_suppresses_bare_turnend
 test_idle_pane_turnend_wakes
 test_status_write_wakes_despite_busy_pane
 test_secondmate_turnend_never_suppressed
 test_turnend_without_meta_wakes
 test_settled_idle_backstop_fires_stale
+test_suppressed_turnend_resets_heartbeat_streak
+test_consumed_turnend_clears_stale_dedup

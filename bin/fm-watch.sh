@@ -130,6 +130,21 @@ turnend_suppressed() {
   printf '%s' "$tail40" | pane_busy_tail
 }
 
+# clear_stale_for_turnend <file>: drop the stale-scan dedup marker (.stale-*)
+# for the window behind a consumed <id>.turn-ended, so the settled-idle backstop
+# still fires when the pane later settles into a byte-identical state the stale
+# scan already reported once.
+clear_stale_for_turnend() {
+  local f=$1 id meta w key
+  id=$(basename "$f" .turn-ended)
+  meta="$STATE/$id.meta"
+  [ -e "$meta" ] || return 0
+  w=$(grep '^window=' "$meta" | cut -d= -f2- || true)
+  [ -n "$w" ] || return 0
+  key=$(printf '%s' "$w" | tr ':/.' '___')
+  rm -f "$STATE/.stale-$key"
+}
+
 window_kind() {
   local w=$1 meta mw kind
   for meta in "$STATE"/*.meta; do
@@ -186,8 +201,10 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
 # mtime-vs-a-startup-touch, so signals that land while no watcher is running
 # are caught by the next one, and same-second writes cannot slip through a
 # strict -nt comparison. Pure read: prints one "<seen-file>\t<sig>\t<file>"
-# line per changed file; .seen-* is updated only when a wake is reported, so
-# a watcher killed mid-cycle never swallows a signal.
+# line per changed file. A real wake advances .seen-* only after the wake is
+# enqueued, so a watcher killed mid-cycle re-detects that signal rather than
+# swallowing it; a busy turn-end instead advances .seen-* on deliberate
+# consumption with no wake and no queue record (see the debounce below).
 scan_signals() {
   local f sig sf
   for f in "$STATE"/*.status "$STATE"/*.turn-ended; do
@@ -291,6 +308,16 @@ EOF
     done <<EOF
 $pending
 EOF
+    # Consuming a busy turn-end is observed crew activity even though it fires no
+    # wake: reset the heartbeat cadence (without touching .last-heartbeat) so the
+    # interval does not back off during suppressed-but-active work, and drop each
+    # consumed window's stale dedup so the settled-idle backstop still fires.
+    if [ -n "$suppressed" ]; then
+      echo 0 > "$STATE/.heartbeat-streak"
+      for f in $suppressed; do
+        clear_stale_for_turnend "$f"
+      done
+    fi
     if [ -n "$files" ]; then
       wake "$reason"
     fi
