@@ -24,7 +24,11 @@
 #   that pointer, and arms status carry-back. machine= empty/hub is the local path,
 #   byte-for-byte unchanged.
 #   Ship/scout spawns refuse to launch after treehouse get unless the resolved pane
-#   path is a real git worktree root distinct from the primary project checkout.
+#   path is a real git worktree root OF THE PROJECT REPO (same git common dir as
+#   the project clone) distinct from the primary project checkout, the firstmate
+#   primary checkout, and the firstmate home; pane-cwd startup transients that are
+#   foreign git toplevels (e.g. the tmux server's own cwd) are polled past, never
+#   latched into meta or given a turn-end hook.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -226,6 +230,23 @@ path_is_ancestor_of() {
     "$ancestor"/*) return 0 ;;
   esac
   return 1
+}
+
+# git_common_dir_real <path>: the physical absolute path of <path>'s git common
+# dir - the one .git every linked worktree of a repo shares - or empty when
+# <path> is not inside a git repo. This is the repo-membership test the worktree
+# settle loop and isolation guard key on: two paths belong to the same repo iff
+# their common dirs resolve identically. rev-parse may print the common dir
+# relative to the -C dir, so absolutize against <path> before resolving.
+git_common_dir_real() {
+  local path=$1 d
+  d=$(git -C "$path" rev-parse --git-common-dir 2>/dev/null) || d=
+  [ -n "$d" ] || return 0
+  case "$d" in
+    /*) : ;;
+    *) d="$path/$d" ;;
+  esac
+  (cd "$d" 2>/dev/null && pwd -P) || true
 }
 
 validate_firstmate_home_for_spawn() {
@@ -639,17 +660,29 @@ tmux new-window -d -t "$SES" -n "$W" -c "$PROJ_ABS"
 if [ "$KIND" != secondmate ]; then
   tmux send-keys -t "$T" 'treehouse get' Enter
 
-  # Wait for the treehouse subshell to SETTLE into a real worktree. During window
-  # and shell startup the pane's cwd transiently passes through other paths (e.g.
-  # $HOME) before treehouse enters the worktree, so accepting the first path that is
-  # merely != PROJ_ABS can latch such a transient (which then trips the isolation
-  # guard below and aborts a spawn that would have succeeded). Only accept a path
-  # that is a settled git worktree root distinct from PROJ_ABS; keep polling otherwise.
+  # Wait for the treehouse subshell to SETTLE into a real worktree OF THIS
+  # PROJECT. During window and shell startup the pane's cwd transiently passes
+  # through other paths before treehouse enters the worktree: $HOME, and - the
+  # sharp edge - the tmux server's own cwd (visible between tmux's fork and the
+  # pane child's chdir), which for firstmate's session is typically the firstmate
+  # primary checkout, itself a genuine git toplevel distinct from PROJ_ABS.
+  # Accepting any settled foreign toplevel latched exactly that transient on real
+  # spawns: meta recorded worktree=<firstmate primary> (pointing teardown's
+  # landed-work check at the wrong repo) and the turn-end hook landed in the
+  # primary, waking firstmate on its own turn ends. The authoritative membership
+  # test: every treehouse worktree of the project is a linked worktree of the
+  # project clone, so its git common dir resolves to PROJ_ABS's own; a transient
+  # from any other repo (the firstmate primary included) can never match it.
+  PROJ_COMMON=$(git_common_dir_real "$PROJ_ABS")
+  if [ -z "$PROJ_COMMON" ]; then
+    echo "error: cannot resolve the git common dir of $PROJ_ABS (not a git repo?); cannot verify a treehouse worktree of it" >&2
+    exit 1
+  fi
   for _ in $(seq 1 60); do
     p=$(tmux display-message -p -t "$T" '#{pane_current_path}' 2>/dev/null || true)
     if [ -n "$p" ] && [ "$p" != "$PROJ_ABS" ]; then
       p_top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || true)
-      if [ -n "$p_top" ] && [ "$p_top" != "$PROJ_ABS" ]; then
+      if [ -n "$p_top" ] && [ "$p_top" != "$PROJ_ABS" ] && [ "$(git_common_dir_real "$p")" = "$PROJ_COMMON" ]; then
         WT="$p"
         break
       fi
@@ -657,18 +690,22 @@ if [ "$KIND" != secondmate ]; then
     sleep 1
   done
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+    echo "error: treehouse get did not enter a worktree of $PROJ_ABS within 60s; inspect window $T (a pane parked in another repo's checkout is never accepted)" >&2
     exit 1
   fi
 
-  # Isolation guard: refuse to launch unless WT is a genuine, ISOLATED worktree -
-  # a real git worktree root, distinct from the project's primary checkout
-  # (PROJ_ABS). Firstmate is a treehouse-pooled repo of itself, so a treehouse-get
-  # misfire can leave the pane in (or in a subdir of, or a symlink to) the primary
-  # checkout; branching/committing there would tangle the primary onto a feature
-  # branch (see fm-tangle-lib.sh). The wait loop above already requires a settled
-  # git worktree root distinct from PROJ_ABS; this re-checks with authoritative
-  # realpaths as defense in depth before anything branches or commits.
+  # Isolation guard: refuse to launch unless WT is a genuine, ISOLATED worktree
+  # OF THE PROJECT - a real git worktree root, sharing the project's git common
+  # dir, distinct from the project's primary checkout (PROJ_ABS) and from
+  # firstmate's own primary checkout and home. Firstmate is a treehouse-pooled
+  # repo of itself, so a treehouse-get misfire can leave the pane in (or in a
+  # subdir of, or a symlink to) a primary checkout; branching/committing there
+  # would tangle the primary onto a feature branch (see fm-tangle-lib.sh), and
+  # recording it in meta would point teardown's landed-work check at the wrong
+  # repo and install the turn-end hook into a checkout firstmate itself runs in.
+  # The wait loop above already requires a settled same-repo worktree root; this
+  # re-checks with authoritative realpaths as defense in depth before anything
+  # branches, commits, or gets a hook installed.
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -677,13 +714,35 @@ if [ "$KIND" != secondmate ]; then
   if ! proj_real=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P); then
     proj_real=
   fi
+  fm_root_real=
+  if ! fm_root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P); then
+    fm_root_real=
+  fi
+  fm_home_real=
+  if ! fm_home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P); then
+    fm_home_real=
+  fi
   wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null || true)
   wt_top_real=
   if ! wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P); then
     wt_top_real=
   fi
-  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
-    echo "error: treehouse get did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect window $T" >&2
+  iso_fail=
+  if [ -z "$wt_real" ] || [ -z "$wt_top_real" ]; then
+    iso_fail="the pane path or its worktree root cannot be resolved"
+  elif [ "$wt_real" != "$wt_top_real" ]; then
+    iso_fail="the pane path is not a worktree root"
+  elif [ "$wt_real" = "$proj_real" ]; then
+    iso_fail="the pane path is the project's primary checkout"
+  elif [ -n "$fm_root_real" ] && [ "$wt_real" = "$fm_root_real" ]; then
+    iso_fail="the pane path is the firstmate primary checkout"
+  elif [ -n "$fm_home_real" ] && [ "$wt_real" = "$fm_home_real" ]; then
+    iso_fail="the pane path is the firstmate home"
+  elif [ "$(git_common_dir_real "$wt_real")" != "$PROJ_COMMON" ]; then
+    iso_fail="the pane path belongs to a different repo than the project"
+  fi
+  if [ -n "$iso_fail" ]; then
+    echo "error: treehouse get did not yield an isolated worktree of the project ($iso_fail; resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling a primary checkout. Inspect window $T" >&2
     exit 1
   fi
 fi
@@ -696,6 +755,14 @@ exclude_path() {
   local rel=$1 EXCL
   EXCL=$(git -C "$WT" rev-parse --git-path info/exclude 2>/dev/null || true)
   [ -n "$EXCL" ] || return 0
+  # rev-parse prints the path relative to the -C dir when it can; anchor it at
+  # the worktree, never at this script's own cwd (which is the firstmate home -
+  # resolving there once appended the exclude into the PRIMARY checkout's git
+  # exclude, hiding a mis-scoped hook file from git status).
+  case "$EXCL" in
+    /*) : ;;
+    *) EXCL="$WT/$EXCL" ;;
+  esac
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
