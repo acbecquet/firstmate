@@ -74,6 +74,7 @@ tests/fm-tangle-guard.test.sh             # primary-checkout tangle detection an
 tests/fm-spawn-batch.test.sh              # batch dispatch and FM_HOME project-path scoping tests
 tests/fm-spawn-worktree-meta.test.sh      # fm-spawn worktree resolution after treehouse get: a foreign-repo pane transient (e.g. the firstmate primary) is never latched, so meta worktree= and the turn-end hook stay in the project's isolated worktree
 tests/fm-spawn-crew-model.test.sh         # config/crew-model claude model pin: absent file leaves the launch byte-for-byte unchanged, ship and scout spawns get --model, secondmate spawns and non-claude harnesses never do, whitespace-only trims to no flag
+tests/fm-home-seed-crew-model.test.sh     # fm-home-seed propagation of the config/crew-model pin into a seeded secondmate home: a present pin is copied verbatim (byte-for-byte), absent and whitespace-only pins copy nothing and leave the home otherwise fully seeded
 tests/fm-update.test.sh                   # fast-forward-only self-update, reread, nudge, dedup, and skip-safety tests
 tests/fm-secondmate-sync.test.sh          # local-HEAD secondmate sync, no-fetch, bootstrap nudge gating, and spawn hook tests
 tests/fm-secondmate-lifecycle-e2e.test.sh # persistent secondmate routing, seeding, backlog handoff, spawn, recovery, teardown, and FM_HOME flow tests
