@@ -61,6 +61,7 @@ shellcheck bin/*.sh tests/*.sh            # lint the toolbelt and behavior tests
 for test_script in tests/*.test.sh; do "$test_script"; done   # behavior tests, matching CI
 tests/fm-wake-queue.test.sh               # durable wake queue losslessness, catch-up, double-drain, duplicate-collapse, and drain liveness guard tests
 tests/fm-watcher-lock.test.sh             # watcher singleton, lock-race, watch-arm liveness, and guard-warning tests
+tests/fm-watch-turnend-debounce.test.sh   # turn-end debounce against a busy crew pane: busy consumes the touch with no wake or queue record, idle wakes, status writes and kind=secondmate turn-ends always wake, missing meta falls back to waking
 tests/fm-daemon.test.sh                   # sub-supervisor classifier, /afk presence-gating, max-defer, composer, and fm-send submit tests
 tests/fm-send-settle.test.sh              # fm-send post-submit settle pause, tuning, disable, and --key bypass tests
 tests/fm-send-popup-settle.test.sh        # fm-send pre-Enter popup-settle selection for slash commands and codex $skill invocations
@@ -72,6 +73,7 @@ tests/fm-bootstrap.test.sh                # bootstrap dependency and feature-pro
 tests/fm-tangle-guard.test.sh             # primary-checkout tangle detection and spawn/brief isolation tests
 tests/fm-spawn-batch.test.sh              # batch dispatch and FM_HOME project-path scoping tests
 tests/fm-spawn-worktree-meta.test.sh      # fm-spawn worktree resolution after treehouse get: a foreign-repo pane transient (e.g. the firstmate primary) is never latched, so meta worktree= and the turn-end hook stay in the project's isolated worktree
+tests/fm-spawn-crew-model.test.sh         # config/crew-model claude model pin: absent file leaves the launch byte-for-byte unchanged, ship and scout spawns get --model, secondmate spawns and non-claude harnesses never do, whitespace-only trims to no flag
 tests/fm-update.test.sh                   # fast-forward-only self-update, reread, nudge, dedup, and skip-safety tests
 tests/fm-secondmate-sync.test.sh          # local-HEAD secondmate sync, no-fetch, bootstrap nudge gating, and spawn hook tests
 tests/fm-secondmate-lifecycle-e2e.test.sh # persistent secondmate routing, seeding, backlog handoff, spawn, recovery, teardown, and FM_HOME flow tests

@@ -52,6 +52,9 @@ When `FM_HOME` is unset, it also behaves as the old whole-root override.
 claude, codex, opencode, and pi are all empirically verified; new harnesses get verified through a supervised trial task before joining the set.
 The verified adapter knowledge - busy signatures, interrupt and exit commands, skill-invocation syntax, and per-harness quirks - lives in [`.agents/skills/harness-adapters/SKILL.md`](../.agents/skills/harness-adapters/SKILL.md).
 Launch mechanics, including the verified command templates, live in [`bin/fm-spawn.sh`](../bin/fm-spawn.sh).
+The crewmate harness override lives locally in `config/crew-harness` (gitignored; a single adapter name on one line; absent or `default` means crewmates mirror firstmate's own harness), resolved by `bin/fm-harness.sh crew`.
+Its sibling `config/crew-model` (same conventions; absent or empty means no override) pins the Claude model for the ship/scout crewmates this home spawns: the claude launch appends `--model <value>`.
+A secondmate launch never receives that flag - a secondmate is a firstmate in its own home and follows its own `config/crew-model` - and other harnesses are out of scope for now.
 
 ## Toolchain
 
