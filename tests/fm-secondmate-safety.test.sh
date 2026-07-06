@@ -793,13 +793,14 @@ test_home_seed_refuses_symlinked_leaf_files() {
   local home subhome sink err leaf target expected
   home="$TMP_ROOT/symlink-leaf-home"
   err="$TMP_ROOT/symlink-leaf.err"
-  mkdir -p "$home/projects" "$home/data" "$home/state"
+  mkdir -p "$home/projects" "$home/data" "$home/state" "$home/config"
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/symlink-leaf-alpha.git"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
+  printf '%s\n' 'claude-opus-4-8' > "$home/config/crew-model"
   scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for symlink leaf seed test"
 
-  for leaf in data/projects.md data/charter.md .fm-secondmate-home; do
+  for leaf in data/projects.md data/charter.md config/crew-model .fm-secondmate-home; do
     subhome="$TMP_ROOT/symlink-leaf-subhome-${leaf//\//-}"
     sink="$home/data/symlink-leaf-${leaf//\//-}"
     rm -rf "$subhome" "$sink"
