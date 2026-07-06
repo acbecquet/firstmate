@@ -150,8 +150,9 @@ The recorded harness is used for every dispatch until changed; a per-task instru
 Resolve `default` with `bin/fm-harness.sh`; resolve the active crewmate harness with `bin/fm-harness.sh crew`.
 
 Orthogonally, `config/crew-model` (a LOCAL, gitignored sibling of `config/crew-harness`, resolved the same way: single value on one line, absent or empty means no override) pins the Claude model a crewmate launches on.
-The claude crewmate launch in `bin/fm-spawn.sh` honors it for ship and scout spawns only, appending `--model <value>`, so this fleet can run crewmates on a different model than firstmate and secondmates, which inherit the user default.
-A secondmate is a firstmate and never receives the flag, and the pin is claude harness only - other harnesses are out of scope for now.
+The claude crewmate launch in `bin/fm-spawn.sh` honors it for ship and scout spawns only, appending `--model <value>`, so this home can run the crewmates it spawns on a different Claude model than the home itself inherits from the user default.
+The pin is per-home and, exactly like `config/crew-harness`, is not propagated to secondmate homes: a secondmate is a firstmate in its own home and follows its own `config/crew-model`, empty by default, so its crewmates inherit the user default.
+A secondmate launch never receives the flag, and the pin is claude harness only - other harnesses are out of scope for now.
 
 Each adapter splits into mechanics and knowledge.
 The mechanics (launch command, autonomy flag, turn-end hook) live in `bin/fm-spawn.sh`; the knowledge you need while supervising (busy signature, exit, interrupt, dialogs, quirks, skill invocation, resume) lives in the agent-only `harness-adapters` skill.
