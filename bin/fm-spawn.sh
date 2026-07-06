@@ -41,6 +41,12 @@
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
 #                  written by this script; outside the worktree to avoid pi's trust gate)
+#     __MODEL__    crewmate Claude model id from config/crew-model (CREW_MODEL below),
+#                  injected only into a claude ship/scout launch so this fleet can run
+#                  crewmates on a different model than firstmate/secondmates inherit from
+#                  the user default. Never applied to a secondmate (a secondmate is a
+#                  firstmate and follows the user default) or a raw launch command. Claude
+#                  harness only; other harnesses are out of scope for now.
 # Per-harness turn-end hooks are installed automatically; some live outside the worktree.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> mode=<mode> yolo=<on|off> window=<session:window> worktree=<path>
 # mode/yolo are resolved per-project from data/projects.md for ship/scout tasks;
@@ -53,6 +59,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# Resolved exactly like fm-harness.sh resolves config/crew-harness: FM_CONFIG_OVERRIDE,
+# else $FM_HOME/config. Home of the LOCAL, gitignored crew-model pin read below.
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SUB_HOME_MARKER=".fm-secondmate-home"
 # shellcheck source=bin/fm-ff-lib.sh
 . "$SCRIPT_DIR/fm-ff-lib.sh"
@@ -129,6 +138,21 @@ else
   ARG3=${POS[2]:-}
 fi
 
+# Per-kind crewmate model pin. config/crew-model is LOCAL and gitignored, a sibling of
+# config/crew-harness with the same conventions: a single value on one line, absent or
+# empty = no override. A non-empty value pins a ship/scout crewmate's Claude model with
+# --model in the launch command (see launch_template's claude branch and the __MODEL__
+# substitution below), so this fleet can run crewmates on a different model than
+# firstmate/secondmates, which inherit the user default. Scope is deliberately narrow:
+# claude harness only (enforced in the claude launch template; other harnesses are out
+# of scope for now), and never a secondmate - a secondmate is a firstmate and follows
+# the user default, so the pin is not read for a secondmate spawn. Raw launch commands
+# (the unverified-adapter escape hatch) bypass launch_template entirely and are untouched.
+CREW_MODEL=''
+if [ "$KIND" != secondmate ] && [ -f "$CONFIG/crew-model" ]; then
+  CREW_MODEL=$(tr -d '[:space:]' < "$CONFIG/crew-model" 2>/dev/null || true)
+fi
+
 # The verified launch command per adapter. The knowledge half of each adapter
 # (busy signature, exit command, dialogs, quirks) lives in the harness-adapters skill.
 launch_template() {
@@ -144,7 +168,16 @@ launch_template() {
     # does NOT suppress the interactive ghost text (verified empirically), so the env
     # var is the correct control. The dim-aware composer reader in fm-tmux-lib.sh is
     # the defense-in-depth backstop for any pane this flag cannot reach.
-    claude) printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$(cat __BRIEF__)"' ;;
+    claude)
+      # --model __MODEL__ is added only when config/crew-model pinned a value (CREW_MODEL,
+      # non-empty only for a non-secondmate spawn). With no pin the command is byte-for-byte
+      # what it was before, so absent-file behavior is unchanged.
+      if [ "$kind" != secondmate ] && [ -n "$CREW_MODEL" ]; then
+        printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions --model __MODEL__ "$(cat __BRIEF__)"'
+      else
+        printf '%s' 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$(cat __BRIEF__)"'
+      fi
+      ;;
     codex)
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex --dangerously-bypass-approvals-and-sandbox "$(cat __BRIEF__)"'
@@ -844,6 +877,10 @@ sq_piext=$(shell_quote "$STATE/$ID.pi-ext.ts")
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
+# __MODEL__ is present only when the claude template above injected it (CREW_MODEL
+# non-empty); the value is whitespace-stripped, a single shell word. With no pin no
+# placeholder exists, so this is a no-op and the command is unchanged.
+LAUNCH=${LAUNCH//__MODEL__/$CREW_MODEL}
 if [ "$KIND" = secondmate ]; then
   sq_home=$(shell_quote "$PROJ_ABS")
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_HOME=$sq_home $LAUNCH"

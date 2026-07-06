@@ -71,6 +71,7 @@ README.md            public overview and development notes
 .claude/skills       symlink to .agents/skills for claude compatibility
 bin/                 helper scripts, committed; read each script's header before first use
 config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "default" = same as firstmate
+config/crew-model    crewmate Claude model override; LOCAL, gitignored; single value on one line; absent/empty = user default (claude ship/scout spawns only; section 4)
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         captain's curated personal preferences and working style; LOCAL, gitignored, and canonical even if harness memory mirrors it
@@ -147,6 +148,10 @@ Crewmates default to the same harness you are running on.
 The captain may override this at any time, typically at bootstrap: record the choice in `config/crew-harness` (a single adapter name; absent or `default` means mirror your own harness).
 The recorded harness is used for every dispatch until changed; a per-task instruction from the captain ("run this one on codex") overrides it for that dispatch only.
 Resolve `default` with `bin/fm-harness.sh`; resolve the active crewmate harness with `bin/fm-harness.sh crew`.
+
+Orthogonally, `config/crew-model` (a LOCAL, gitignored sibling of `config/crew-harness`, resolved the same way: single value on one line, absent or empty means no override) pins the Claude model a crewmate launches on.
+The claude crewmate launch in `bin/fm-spawn.sh` honors it for ship and scout spawns only, appending `--model <value>`, so this fleet can run crewmates on a different model than firstmate and secondmates, which inherit the user default.
+A secondmate is a firstmate and never receives the flag, and the pin is claude harness only - other harnesses are out of scope for now.
 
 Each adapter splits into mechanics and knowledge.
 The mechanics (launch command, autonomy flag, turn-end hook) live in `bin/fm-spawn.sh`; the knowledge you need while supervising (busy signature, exit, interrupt, dialogs, quirks, skill invocation, resume) lives in the agent-only `harness-adapters` skill.
