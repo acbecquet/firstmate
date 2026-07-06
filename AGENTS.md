@@ -151,7 +151,7 @@ Resolve `default` with `bin/fm-harness.sh`; resolve the active crewmate harness 
 
 Orthogonally, `config/crew-model` (a LOCAL, gitignored sibling of `config/crew-harness`, resolved the same way: single value on one line, absent or empty means no override) pins the Claude model a crewmate launches on.
 The claude crewmate launch in `bin/fm-spawn.sh` honors it for ship and scout spawns only, appending `--model <value>`, so this home can run the crewmates it spawns on a different Claude model than the home itself inherits from the user default.
-The pin is per-home and, exactly like `config/crew-harness`, is not propagated to secondmate homes: a secondmate is a firstmate in its own home and follows its own `config/crew-model`, empty by default, so its crewmates inherit the user default.
+The pin is per-home: seeding a new secondmate home copies a non-empty `config/crew-model` from the seeding firstmate so the fleet's model rule follows, after which the secondmate follows its own `config/crew-model` (absent one, its crewmates inherit the user default); `config/crew-harness` deliberately stays per-home and is never copied.
 A secondmate launch never receives the flag, and the pin is claude harness only - other harnesses are out of scope for now.
 
 Each adapter splits into mechanics and knowledge.
