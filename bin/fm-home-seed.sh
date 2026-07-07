@@ -12,7 +12,10 @@
 #       That project list is non-exclusive provisioning data. The charter brief
 #       is copied to data/charter.md, newly cloned no-mistakes projects are
 #       initialized, a .fm-secondmate-home marker is written, and
-#       data/secondmates.md is updated.
+#       data/secondmates.md is updated. A non-empty config/crew-model pin from the
+#       seeding firstmate is copied into the new home's config/ so the secondmate's
+#       crewmates inherit the fleet's Claude model; config/crew-harness is
+#       intentionally left per-home and never copied.
 #       Seeding is transactional: on validation, clone, init, or registry failure,
 #       generated briefs, new homes, new project clones, and registry edits are
 #       rolled back. Treehouse-acquired homes are returned only when the rollback
@@ -31,6 +34,10 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# Source config dir of the SEEDING firstmate, resolved exactly like fm-harness.sh
+# and fm-spawn.sh resolve it: FM_CONFIG_OVERRIDE, else $FM_HOME/config. Home of the
+# LOCAL, gitignored config/crew-model pin propagated into new secondmate homes below.
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 REG="$DATA/secondmates.md"
 SUB_HOME_MARKER=".fm-secondmate-home"
 
@@ -378,7 +385,7 @@ validate_operational_dirs() {
 validate_seed_leaf_files() {
   local home=$1 label path abs_home abs_path
   abs_home=$(resolved_path "$home")
-  for label in "data/projects.md" "data/charter.md" "$SUB_HOME_MARKER"; do
+  for label in "data/projects.md" "data/charter.md" "config/crew-model" "$SUB_HOME_MARKER"; do
     path="$home/$label"
     if [ -L "$path" ]; then
       echo "error: secondmate leaf file must not be a symlink: $path" >&2
@@ -587,6 +594,7 @@ SEED_PARENT_BRIEF_DIR_CREATED=0
 SEED_SUB_REG_EXISTED=0
 SEED_CHARTER_EXISTED=0
 SEED_MARKER_EXISTED=0
+SEED_CREW_MODEL_EXISTED=0
 
 restore_seed_file() {
   local existed=$1 backup=$2 path=$3
@@ -708,6 +716,7 @@ seed_rollback() {
         restore_seed_file "$SEED_MARKER_EXISTED" "$SEED_BACKUP_DIR/marker" "$SEED_HOME/$SUB_HOME_MARKER"
         restore_seed_file "$SEED_CHARTER_EXISTED" "$SEED_BACKUP_DIR/charter.md" "$SEED_HOME/data/charter.md"
         restore_seed_file "$SEED_SUB_REG_EXISTED" "$SEED_BACKUP_DIR/sub-projects.md" "$SEED_HOME/data/projects.md"
+        restore_seed_file "$SEED_CREW_MODEL_EXISTED" "$SEED_BACKUP_DIR/crew-model" "$SEED_HOME/config/crew-model"
       fi
     fi
   fi
@@ -800,6 +809,27 @@ write_registry() {
   mv "$tmp" "$REG"
 }
 
+# Propagate the fleet's crewmate model pin into a newly seeded secondmate home.
+# A secondmate is a firstmate in its own home, seeded from a fresh clone with an
+# empty, gitignored config/, so without this its crewmates would fall back to the
+# user default and silently escape the captain's fleet-wide model rule. The source
+# is the seeding firstmate's own config/crew-model ($CONFIG, resolved like the rest
+# of the fleet: FM_CONFIG_OVERRIDE, else $FM_HOME/config); the destination is the
+# secondmate home's own config, exactly as $home/data and $home/projects are used.
+# Absent or whitespace-only source copies nothing, so absent-pin behavior is
+# byte-for-byte unchanged; a real value is copied VERBATIM (cp, not the trimmed
+# value) so the pin lands identically. Only crew-model travels: config/crew-harness
+# is intentionally NOT copied, because a captain overriding the crewmate harness
+# does so per home deliberately (its existing per-home convention), whereas
+# crew-model encodes a fleet-wide captain model rule that should follow the fleet.
+seed_crew_model() {
+  local home=$1 src="$CONFIG/crew-model" value
+  [ -f "$src" ] || return 0
+  value=$(tr -d '[:space:]' < "$src" 2>/dev/null || true)
+  [ -n "$value" ] || return 0
+  cp "$src" "$home/config/crew-model"
+}
+
 seed_home() {
   local id=$1 requested_home=$2 requested_abs home projects_csv project project_dst charter_summary charter_scope
   shift 2
@@ -828,6 +858,7 @@ seed_home() {
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
   SEED_MARKER_EXISTED=0
+  SEED_CREW_MODEL_EXISTED=0
   trap seed_rollback EXIT
   if [ -f "$REG" ]; then
     SEED_PARENT_REG_EXISTED=1
@@ -864,6 +895,10 @@ seed_home() {
   if [ -f "$home/$SUB_HOME_MARKER" ]; then
     SEED_MARKER_EXISTED=1
     cp "$home/$SUB_HOME_MARKER" "$SEED_BACKUP_DIR/marker"
+  fi
+  if [ -f "$home/config/crew-model" ]; then
+    SEED_CREW_MODEL_EXISTED=1
+    cp "$home/config/crew-model" "$SEED_BACKUP_DIR/crew-model"
   fi
   SEED_HOME_BACKED_UP=1
 
@@ -907,6 +942,7 @@ seed_home() {
   done
 
   cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
+  seed_crew_model "$home"
 
   projects_csv=$(join_projects "$@")
   printf '%s\n' "$id" > "$home/$SUB_HOME_MARKER"

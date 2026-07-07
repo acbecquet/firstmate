@@ -55,6 +55,7 @@ Launch mechanics, including the verified command templates, live in [`bin/fm-spa
 The crewmate harness override lives locally in `config/crew-harness` (gitignored; a single adapter name on one line; absent or `default` means crewmates mirror firstmate's own harness), resolved by `bin/fm-harness.sh crew`.
 Its sibling `config/crew-model` (same conventions; absent or empty means no override) pins the Claude model for the ship/scout crewmates this home spawns: the claude launch appends `--model <value>`.
 A secondmate launch never receives that flag - a secondmate is a firstmate in its own home and follows its own `config/crew-model` - and other harnesses are out of scope for now.
+Seeding a new secondmate home copies a non-empty pin from the seeding firstmate into that home's own `config/crew-model`, so the fleet's model rule follows; `config/crew-harness` deliberately stays per-home and is never copied.
 
 ## Toolchain
 
