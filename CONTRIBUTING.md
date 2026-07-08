@@ -92,6 +92,9 @@ tests/fm-cross-machine-update.test.sh     # multi-machine M5 cross-machine self-
 FM_HEARTBEAT=2 FM_POLL=1 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then "heartbeat")
 ```
 
+CI runs the same checks on pushes to `main` and on pull requests targeting `main`.
+It can also be triggered manually with `gh workflow run ci.yml --ref main` for ad-hoc verification.
+
 ## Questions
 
 Open an issue, or talk to me on [Discord](https://discord.gg/Wsy2NpnZDu).
