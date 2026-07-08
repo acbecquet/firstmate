@@ -43,27 +43,42 @@ pass() {
 
 # --- self-cleaning temp root ------------------------------------------------
 #
-# fm_test_tmproot <prefix> echoes a fresh temp dir and registers it for removal
-# on EXIT. The first call installs the cleanup trap. A test file that needs
-# extra teardown (e.g. killing a daemon) should define its own EXIT trap and
-# call fm_test_cleanup from inside it so registered dirs are still removed.
+# fm_test_tmproot <prefix> echoes a fresh temp dir and records it for removal
+# when the test process exits. Callers capture the path with command
+# substitution - TMP_ROOT=$(fm_test_tmproot ...) - which runs the function in a
+# subshell, so an in-memory registry and a trap installed inside the function are
+# both discarded when that subshell returns. That was the /tmp leak: the old
+# cleanup trap fired in the throwaway command-substitution subshell, deleting the
+# just-created dir, which the test then unknowingly recreated with mkdir -p and
+# nothing ever cleaned on the real (parent) exit. So created dirs are appended to
+# a per-process manifest FILE - which survives subshells - and the trap is
+# installed here at source time in the test's own shell, firing once on success,
+# failure, and interrupt.
+#
+# A test file that installs its own EXIT trap (overriding the one below) and
+# still uses fm_test_tmproot should call fm_test_cleanup from inside its trap so
+# the recorded dirs are removed.
 
-FM_TEST_CLEANUP_DIRS=()
+FM_TEST_CLEANUP_MANIFEST="${TMPDIR:-/tmp}/.fm-test-cleanup.$$"
+: > "$FM_TEST_CLEANUP_MANIFEST"
 
 fm_test_cleanup() {
   local d
-  for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"; do
-    [ -n "$d" ] && rm -rf "$d"
-  done
+  [ -f "$FM_TEST_CLEANUP_MANIFEST" ] || return 0
+  while IFS= read -r d; do
+    [ -n "$d" ] && rm -rf -- "$d"
+  done < "$FM_TEST_CLEANUP_MANIFEST"
+  rm -f -- "$FM_TEST_CLEANUP_MANIFEST"
 }
+
+trap fm_test_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
   root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
-  if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
-    trap fm_test_cleanup EXIT
-  fi
-  FM_TEST_CLEANUP_DIRS+=("$root")
+  printf '%s\n' "$root" >> "$FM_TEST_CLEANUP_MANIFEST"
   printf '%s\n' "$root"
 }
 
