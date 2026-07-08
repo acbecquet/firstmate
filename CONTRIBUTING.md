@@ -61,6 +61,7 @@ shellcheck bin/*.sh tests/*.sh            # lint the toolbelt and behavior tests
 for test_script in tests/*.test.sh; do "$test_script"; done   # behavior tests, matching CI
 tests/fm-wake-queue.test.sh               # durable wake queue losslessness, catch-up, double-drain, duplicate-collapse, and drain liveness guard tests
 tests/fm-watcher-lock.test.sh             # watcher singleton, lock-race, watch-arm liveness, and guard-warning tests
+tests/fm-lock.test.sh                     # per-home session lock liveness (mock ps shim, deterministic): zombie holder treated as stale, FM_LOCK_PID and session-id fallbacks when the harness is not in the tool shell's ancestry, live-holder refusal, and the no-identity honesty guard
 tests/fm-watch-turnend-debounce.test.sh   # turn-end debounce against a busy crew pane: busy consumes the touch with no wake or queue record, idle wakes, status writes and kind=secondmate turn-ends always wake, missing meta falls back to waking
 tests/fm-daemon.test.sh                   # sub-supervisor classifier, /afk presence-gating, max-defer, composer, and fm-send submit tests
 tests/fm-send-settle.test.sh              # fm-send post-submit settle pause, tuning, disable, and --key bypass tests

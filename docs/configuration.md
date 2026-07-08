@@ -83,6 +83,7 @@ FM_CHECK_INTERVAL=300   # seconds between slow checks (merged-PR polls)
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-crew-state.sh
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
+FM_LOCK_PID=            # explicit fm-lock.sh session-lock holder for sessions whose tool shells lack the harness in their ancestry; honored only when it names a live, non-zombie harness process
 FM_GUARD_GRACE=300      # seconds before guard warnings and arm health checks treat a watcher beacon as stale
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED
 FM_WATCHER_STALE_GRACE=300   # defaults to FM_GUARD_GRACE; seconds a live watcher lock may have a stale beacon before re-arm errors

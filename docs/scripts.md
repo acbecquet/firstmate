@@ -38,4 +38,4 @@ Each file also starts with a short header comment.
 | `fm-promote.sh`          | Promote a scout task in place so it becomes a protected ship task                                                   |
 | `fm-teardown.sh`         | Return a clean, landed ship worktree or retire/release a secondmate home; requires scout reports, checks child work, and prints the backlog reminder |
 | `fm-harness.sh`          | Detect the running harness; resolve the effective crewmate harness                                                  |
-| `fm-lock.sh`             | Per-home firstmate session lock                                                                                     |
+| `fm-lock.sh`             | Per-home firstmate session lock with zombie-aware holder liveness; records the session's harness PID resolved via `FM_LOCK_PID` override, then the ancestry walk, then a unique session-id match for background sessions whose tool shells run under a pty-host daemon |
