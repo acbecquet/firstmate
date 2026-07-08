@@ -14,10 +14,14 @@
 #   3. Session match - a background/chat session's tool shells are spawned by a
 #      pty-host daemon, so the harness is NOT in our ancestry and the walk finds
 #      nothing. Fall back to the one live harness process that carries this
-#      session id (CLAUDE_CODE_SESSION_ID, exported into every tool shell) in its
-#      args - a resumed/background session runs as `claude --resume <session-id>`.
-#      That process IS the session, so its liveness tracks the session exactly;
-#      an ambiguous (non-unique) match is refused rather than guessed.
+#      session id (CLAUDE_CODE_SESSION_ID, exported into every tool shell) as a
+#      whole argument - a resumed/background session runs as
+#      `claude --resume <session-id>`. Only a process whose command word is
+#      itself a known harness binary qualifies, so a bystander that merely
+#      references the session id (a transcript-path tail, a log watcher) can
+#      never become the holder. That process IS the session, so its liveness
+#      tracks the session exactly; zero or ambiguous (non-unique) matches are
+#      refused rather than guessed.
 #
 # Liveness is zombie-aware. kill -0 succeeds on a defunct (zombie) process whose
 # PID still lingers in the process table, and ps preserves its harness command
@@ -35,7 +39,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 LOCK="$STATE/.lock"
 mkdir -p "$STATE"
 
-# Known harness command names; extend when a new adapter is verified.
+# Known harness command names; extend when a new adapter is verified, together
+# with the exact command-word list in session_harness_pid.
 HARNESS_RE='claude|codex|opencode|^pi$'
 
 harness_pid() {
@@ -76,20 +81,28 @@ holder_alive() {  # true if $1 is a live (non-defunct) process that looks like a
 
 # session_harness_pid: fallback identity when the harness is not in our ancestry
 # (a background/chat session behind a pty-host daemon). Locate the one live
-# harness process carrying this session id in its args; refuse a non-unique match.
+# harness process carrying this session id in its args. A candidate must be a
+# genuine harness: its command word (first argv token basename) must be a known
+# harness binary, and the session id must appear as a whole argument (bare or
+# --flag=<sid>), never as a substring of a longer token such as a transcript
+# path. Zero or multiple candidates fail the resolution rather than guess.
 session_harness_pid() {
-  local sid=${CLAUDE_CODE_SESSION_ID:-} p args match=""
+  local sid=${CLAUDE_CODE_SESSION_ID:-} p args word match=""
   [ -n "$sid" ] || return 1
-  while read -r p; do
+  while read -r p args; do
     [ -n "$p" ] || continue
-    args=$(ps -o args= -p "$p" 2>/dev/null) || continue
-    case "$args" in *"$sid"*) : ;; *) continue ;; esac
+    case " $args " in
+      *" $sid "*|*"=$sid "*) : ;;
+      *) continue ;;
+    esac
+    word=${args%% *}
+    case "${word##*/}" in claude|codex|opencode|pi) : ;; *) continue ;; esac
     holder_alive "$p" || continue
     if [ -n "$match" ] && [ "$match" != "$p" ]; then
       return 1
     fi
     match=$p
-  done < <(ps -eo pid= 2>/dev/null)
+  done < <(ps -eo pid=,args= 2>/dev/null)
   [ -n "$match" ] || return 1
   echo "$match"
 }
