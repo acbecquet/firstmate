@@ -18,8 +18,9 @@
 
 # Idempotent guard: behavior-area helper files (secondmate-helpers.sh,
 # wake-helpers.sh) source this library for ROOT/fail/pass, and the test that
-# includes them may also source it directly. Re-sourcing must not wipe the
-# registered-cleanup array or reset state.
+# includes them may also source it directly. Re-sourcing must not recreate or
+# truncate the cleanup manifest (orphaning already-recorded dirs) or reinstall
+# the cleanup traps.
 if [ -n "${FM_TEST_LIB_SOURCED:-}" ]; then
   return 0
 fi
@@ -59,8 +60,7 @@ pass() {
 # still uses fm_test_tmproot should call fm_test_cleanup from inside its trap so
 # the recorded dirs are removed.
 
-FM_TEST_CLEANUP_MANIFEST="${TMPDIR:-/tmp}/.fm-test-cleanup.$$"
-: > "$FM_TEST_CLEANUP_MANIFEST"
+FM_TEST_CLEANUP_MANIFEST=$(mktemp "${TMPDIR:-/tmp}/.fm-test-cleanup.XXXXXX")
 
 fm_test_cleanup() {
   local d
