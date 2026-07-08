@@ -16,6 +16,10 @@
 # a `ps` shim on PATH reproduces the exact signals fm-lock.sh reads.
 #   FM_PS_PPID1=1      -> answer the ancestry walk's `ppid=` query with 1, so the
 #                        walk terminates with no harness ancestor (the pty-host case).
+#                        FM_PS_PPID1_PASS may name a file of pids whose `ppid=`
+#                        queries still delegate to the real ps, so a test can break
+#                        the lock's own ancestry walk while keeping the candidate
+#                        launcher-filter walk (fake parent/child pairs) readable.
 #   FM_PS_ZOMBIE=<pid> -> answer a `state=`/`stat=` query for <pid> with Z, so a
 #                        real live pid presents as defunct while kill -0 still passes.
 # Every other ps query delegates to the real ps (via FM_REAL_PS), so a live fake
@@ -70,6 +74,10 @@ for a in "$@"; do
   prev="$a"
 done
 if [ "${FM_PS_PPID1:-}" = "1" ] && [ "$want_ppid" = "1" ]; then
+  if [ -n "${FM_PS_PPID1_PASS:-}" ] && [ -f "$FM_PS_PPID1_PASS" ] \
+     && grep -qx "$target" "$FM_PS_PPID1_PASS" 2>/dev/null; then
+    exec "${FM_REAL_PS:?FM_REAL_PS unset}" "$@"
+  fi
   printf '1\n'; exit 0
 fi
 if [ -n "${FM_PS_ZOMBIE:-}" ] && [ "$want_state" = "1" ] && [ "$target" = "${FM_PS_ZOMBIE}" ]; then
@@ -81,37 +89,96 @@ SH
   printf '%s\n' "$dir"
 }
 
-# spawn_fake_harness <dir> [args...] -> echoes the pid of a live, non-zombie
-# process whose command word is `claude` (bash symlinked as `claude`, running an
-# endless loop script), so both the comm/args harness checks and the session
-# match's first-argv-token rule see a genuine harness. Any args (e.g. --resume
-# <sid>) stay visible as whole tokens in its cmdline.
-spawn_fake_harness() {
-  local dir=$1; shift
-  local hbin="$dir/hbin" pid i
-  mkdir -p "$hbin"
-  if [ ! -x "$hbin/claude" ]; then
-    ln -s "$(command -v bash)" "$hbin/claude"
-    cat > "$hbin/harness-loop.sh" <<'SH'
-trap 'exit 0' TERM INT
-while :; do sleep 0.5; done
-SH
-  fi
-  # Redirect the fake's stdio away from any command-substitution pipe capturing
-  # this function, or `$(spawn_fake_harness ...)` would block until the (endless)
-  # fake exits.
-  "$hbin/claude" "$hbin/harness-loop.sh" "$@" >/dev/null 2>&1 &
+# spawn_looper <settle-pattern> <cmd...> -> run <cmd...> detached (an endless
+# loop process), record its pid for the EXIT-trap reaper, wait until ps reports
+# a cmdline matching <settle-pattern> (the harness/bystander checks rely on it),
+# and echo the pid. Stdio is redirected away from any command-substitution pipe
+# capturing the caller, or `$(spawn_... )` would block until the fake exits.
+spawn_looper() {
+  local settle=$1 pid i
+  shift
+  "$@" >/dev/null 2>&1 &
   pid=$!
   printf '%s\n' "$pid" >> "$FAKE_PID_FILE"
-  # Settle until the process's cmdline is populated (harness match relies on it).
   i=0
   while [ "$i" -lt 40 ]; do
+    # shellcheck disable=SC2254  # settle is a deliberate glob pattern
     case "$("$REAL_PS" -o args= -p "$pid" 2>/dev/null)" in
-      *claude*) break ;;
+      $settle) break ;;
     esac
     sleep 0.05; i=$((i + 1))
   done
   printf '%s\n' "$pid"
+}
+
+fake_loop_script() {  # write the endless-loop body to $1 (idempotent)
+  [ -f "$1" ] || cat > "$1" <<'SH'
+trap 'exit 0' TERM INT
+while :; do sleep 0.5; done
+SH
+}
+
+# spawn_fake_harness <dir> [args...] -> echoes the pid of a live, non-zombie
+# process whose command word is `claude` (bash symlinked as `claude`, running an
+# endless loop script), so both the comm/args harness checks and the session
+# match's command-word rule see a genuine harness. Any args (e.g. --resume
+# <sid>) stay visible as whole tokens in its cmdline.
+spawn_fake_harness() {
+  local dir=$1; shift
+  local hbin="$dir/hbin"
+  mkdir -p "$hbin"
+  [ -x "$hbin/claude" ] || ln -s "$(command -v bash)" "$hbin/claude"
+  fake_loop_script "$hbin/harness-loop.sh"
+  spawn_looper '*claude*' "$hbin/claude" "$hbin/harness-loop.sh" "$@"
+}
+
+# spawn_fake_versioned_harness <dir> [args...] -> echoes the pid of a live fake
+# harness whose command word is a versioned-install path (.../claude/versions/
+# 2.1.201): the basename is NOT a harness name, only the `claude` path component
+# is - the real background/pty-host respawn shape the session match must accept.
+spawn_fake_versioned_harness() {
+  local dir=$1; shift
+  local vbin="$dir/vbin"
+  mkdir -p "$vbin/claude/versions"
+  [ -x "$vbin/claude/versions/2.1.201" ] || \
+    ln -s "$(command -v bash)" "$vbin/claude/versions/2.1.201"
+  fake_loop_script "$vbin/loop.sh"
+  spawn_looper '*claude/versions*' "$vbin/claude/versions/2.1.201" "$vbin/loop.sh" "$@"
+}
+
+# spawn_fake_ptyhost_pair <dir> <resume-path> -> spawn a fake pty-host daemon
+# (command word `claude`, argv embedding the harness command it spawns - resume
+# path, sid and all) that itself spawns the child harness running with
+# `--resume <resume-path>`. Echoes the DAEMON pid; the child pid lands in
+# <dir>/child-pid once spawned. Mirrors the real background-session shape where
+# both parent and child match every session-match gate.
+spawn_fake_ptyhost_pair() {
+  local dir=$1 resume=$2
+  local dbin="$dir/dbin" hbin="$dir/hbin"
+  mkdir -p "$dbin" "$hbin"
+  [ -x "$dbin/claude" ] || ln -s "$(command -v bash)" "$dbin/claude"
+  [ -x "$hbin/claude" ] || ln -s "$(command -v bash)" "$hbin/claude"
+  fake_loop_script "$hbin/harness-loop.sh"
+  cat > "$dbin/ptyhost-loop.sh" <<SH
+"$hbin/claude" "$hbin/harness-loop.sh" --resume "$resume" >/dev/null 2>&1 &
+printf '%s\n' "\$!" >> "$FAKE_PID_FILE"
+printf '%s\n' "\$!" > "$dir/child-pid"
+trap 'exit 0' TERM INT
+while :; do sleep 0.5; done
+SH
+  spawn_looper '*ptyhost-loop*' "$dbin/claude" "$dbin/ptyhost-loop.sh" \
+    --bg-pty-host -- "$hbin/claude" "$hbin/harness-loop.sh" --resume "$resume"
+}
+
+# spawn_fake_pi_harness <dir> -> echoes the pid of a live fake harness whose
+# command name is exactly `pi`, matchable only by the anchored ^pi$ alternative.
+spawn_fake_pi_harness() {
+  local dir=$1
+  local pbin="$dir/pbin"
+  mkdir -p "$pbin"
+  [ -x "$pbin/pi" ] || ln -s "$(command -v bash)" "$pbin/pi"
+  fake_loop_script "$pbin/loop.sh"
+  spawn_looper '*pbin/pi *' "$pbin/pi" "$pbin/loop.sh"
 }
 
 # spawn_fake_bystander <dir> [args...] -> echoes the pid of a live process whose
@@ -120,7 +187,7 @@ SH
 # and the session id, the lookalike the session match must never pick.
 spawn_fake_bystander() {
   local dir=$1; shift
-  local bbin="$dir/bbin" pid i
+  local bbin="$dir/bbin"
   mkdir -p "$bbin"
   if [ ! -x "$bbin/watcher" ]; then
     cat > "$bbin/watcher" <<'SH'
@@ -130,17 +197,7 @@ while :; do sleep 0.5; done
 SH
     chmod +x "$bbin/watcher"
   fi
-  "$bbin/watcher" "$@" >/dev/null 2>&1 &
-  pid=$!
-  printf '%s\n' "$pid" >> "$FAKE_PID_FILE"
-  i=0
-  while [ "$i" -lt 40 ]; do
-    case "$("$REAL_PS" -o args= -p "$pid" 2>/dev/null)" in
-      *watcher*) break ;;
-    esac
-    sleep 0.05; i=$((i + 1))
-  done
-  printf '%s\n' "$pid"
+  spawn_looper '*watcher*' "$bbin/watcher" "$@"
 }
 
 uniq_sid() { printf 'fmlock-sid-%s-%s\n' "$$" "${RANDOM}${RANDOM}"; }
@@ -199,9 +256,10 @@ test_ancestry_fail_session_match_acquires() {
 }
 
 # (b1b) Session-match lookalikes are rejected: a non-harness process whose args
-# merely contain the session id (a transcript-path watcher), and a harness whose
-# args embed the sid inside a longer path token, must neither become the holder
-# nor trip the non-unique refusal once the genuine `--resume <sid>` harness runs.
+# carry the session id (a transcript-path watcher), and a harness whose args
+# embed the sid as a bare substring of a longer token (no token or [/._=-]
+# boundary), must neither become the holder nor trip the non-unique refusal
+# once the genuine `--resume <sid>` harness runs.
 test_session_match_rejects_lookalikes() {
   local dir state fakebin sid harness err out rc
   dir=$(make_case session-lookalikes)
@@ -209,7 +267,7 @@ test_session_match_rejects_lookalikes() {
   fakebin="$dir/fakebin"
   sid=$(uniq_sid)
   spawn_fake_bystander "$dir" "$dir/.claude/projects/p/$sid.jsonl" >/dev/null
-  spawn_fake_harness "$dir" "$dir/transcripts/$sid.jsonl" >/dev/null
+  spawn_fake_harness "$dir" "ref${sid}log" >/dev/null
 
   # With only lookalikes present, no honest identity exists: refuse, write nothing.
   err="$dir/err"
@@ -232,6 +290,89 @@ test_session_match_rejects_lookalikes() {
     fail "lock must record the genuine harness pid, got '$(cat "$state/.lock")'"
   assert_contains "$out" "lock acquired" "unique-match acquisition should confirm"
   pass "session match rejects lookalikes and stays unique on the genuine harness"
+}
+
+# (b1c) The real background/pty-host argv shape: the harness runs as a versioned
+# binary (.../claude/versions/<v>) whose basename is not a harness name, with the
+# session id embedded in the --resume transcript path rather than as a whole
+# token. The session match must still find and record it when ancestry fails.
+test_session_match_versioned_binary_acquires() {
+  local dir state fakebin sid harness err out rc
+  dir=$(make_case versioned-binary)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sid=$(uniq_sid)
+  harness=$(spawn_fake_versioned_harness "$dir" --resume "$dir/projects/slug/$sid.jsonl")
+
+  err="$dir/err"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_PS="$REAL_PS" FM_STATE_OVERRIDE="$state" \
+        FM_PS_PPID1=1 FM_LOCK_PID='' CLAUDE_CODE_SESSION_ID="$sid" \
+        "$LOCK_SH" 2>"$err")
+  rc=$?
+  expect_code 0 "$rc" "session match must acquire on the versioned-binary transcript-path shape"
+  [ "$(cat "$state/.lock")" = "$harness" ] || \
+    fail "lock must record the versioned harness pid, got '$(cat "$state/.lock")'"
+  assert_contains "$out" "lock acquired" "versioned-binary acquisition should confirm"
+  pass "session match acquires the versioned-binary --resume transcript-path shape"
+}
+
+# (b1c2) The pty-host daemon is filtered as a launcher: its argv embeds the
+# harness command it spawns (sid and all), so both it and its child harness pass
+# every gate. The session match must record the child - never the daemon, and
+# never a non-unique refusal for this parent/child pair.
+test_session_match_filters_ptyhost_launcher() {
+  local dir state fakebin sid child err out rc i
+  dir=$(make_case ptyhost-pair)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sid=$(uniq_sid)
+  spawn_fake_ptyhost_pair "$dir" "$dir/projects/slug/$sid.jsonl" >/dev/null
+  i=0
+  while [ ! -s "$dir/child-pid" ] && [ "$i" -lt 40 ]; do
+    sleep 0.05; i=$((i + 1))
+  done
+  child=$(cat "$dir/child-pid")
+  [ -n "$child" ] || fail "fake pty-host daemon never spawned its child harness"
+  i=0
+  while [ "$i" -lt 40 ]; do
+    case "$("$REAL_PS" -o args= -p "$child" 2>/dev/null)" in
+      *"$sid"*) break ;;
+    esac
+    sleep 0.05; i=$((i + 1))
+  done
+
+  err="$dir/err"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_PS="$REAL_PS" FM_STATE_OVERRIDE="$state" \
+        FM_PS_PPID1=1 FM_PS_PPID1_PASS="$FAKE_PID_FILE" FM_LOCK_PID='' \
+        CLAUDE_CODE_SESSION_ID="$sid" "$LOCK_SH" 2>"$err")
+  rc=$?
+  expect_code 0 "$rc" "the daemon/child pair must resolve to the child, not refuse"
+  [ "$(cat "$state/.lock")" = "$child" ] || \
+    fail "lock must record the child harness pid, got '$(cat "$state/.lock")' (child $child)"
+  assert_contains "$out" "lock acquired" "launcher-filtered acquisition should confirm"
+  pass "session match filters the pty-host launcher and records its child"
+}
+
+# (b1d) Ambiguous session match: two live harness candidates carrying the same
+# session id must refuse acquisition honestly instead of guessing between them.
+test_session_match_ambiguous_refuses() {
+  local dir state fakebin sid err rc
+  dir=$(make_case session-ambiguous)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sid=$(uniq_sid)
+  spawn_fake_harness "$dir" --resume "$sid" >/dev/null
+  spawn_fake_versioned_harness "$dir" --resume "$dir/projects/slug/$sid.jsonl" >/dev/null
+
+  err="$dir/err"
+  PATH="$fakebin:$PATH" FM_REAL_PS="$REAL_PS" FM_STATE_OVERRIDE="$state" \
+    FM_PS_PPID1=1 FM_LOCK_PID='' CLAUDE_CODE_SESSION_ID="$sid" \
+    "$LOCK_SH" >/dev/null 2>"$err"
+  rc=$?
+  expect_code 1 "$rc" "two session-matched harnesses must refuse, not guess"
+  assert_absent "$state/.lock" "an ambiguous match must not write a lock"
+  assert_contains "$(cat "$err")" "cannot locate" "the refusal must report no identity found"
+  pass "an ambiguous (non-unique) session match refuses acquisition"
 }
 
 # (b2) Ancestry-failure fallback via explicit override: FM_LOCK_PID names the
@@ -277,6 +418,27 @@ test_live_holder_refuses_takeover() {
   pass "a genuinely live holder still refuses takeover"
 }
 
+# (b3) A harness whose command name is exactly `pi` must be recognized by
+# holder_alive (the anchored ^pi$ HARNESS_RE alternative), so the FM_LOCK_PID
+# override can record a pi session instead of silently falling through.
+test_pi_comm_recognized() {
+  local dir state fakebin self err out rc
+  dir=$(make_case pi-comm)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  self=$(spawn_fake_pi_harness "$dir")
+
+  err="$dir/err"
+  out=$(PATH="$fakebin:$PATH" FM_REAL_PS="$REAL_PS" FM_STATE_OVERRIDE="$state" \
+        FM_PS_PPID1=1 CLAUDE_CODE_SESSION_ID="$(uniq_sid)" FM_LOCK_PID="$self" \
+        "$LOCK_SH" 2>"$err")
+  rc=$?
+  expect_code 0 "$rc" "FM_LOCK_PID naming a pi harness must be honored"
+  [ "$(cat "$state/.lock")" = "$self" ] || \
+    fail "lock must record the pi harness pid, got '$(cat "$state/.lock")'"
+  pass "a pi-comm harness is recognized as a live harness holder"
+}
+
 # (honesty guard) When ancestry fails and no fallback can honestly identify the
 # session, acquisition refuses rather than inventing a pid.
 test_ancestry_fail_no_fallback_refuses() {
@@ -299,7 +461,11 @@ test_ancestry_fail_no_fallback_refuses() {
 test_zombie_holder_is_stale
 test_ancestry_fail_session_match_acquires
 test_session_match_rejects_lookalikes
+test_session_match_versioned_binary_acquires
+test_session_match_filters_ptyhost_launcher
+test_session_match_ambiguous_refuses
 test_ancestry_fail_env_override_acquires
+test_pi_comm_recognized
 test_live_holder_refuses_takeover
 test_ancestry_fail_no_fallback_refuses
 

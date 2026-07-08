@@ -14,14 +14,18 @@
 #   3. Session match - a background/chat session's tool shells are spawned by a
 #      pty-host daemon, so the harness is NOT in our ancestry and the walk finds
 #      nothing. Fall back to the one live harness process that carries this
-#      session id (CLAUDE_CODE_SESSION_ID, exported into every tool shell) as a
-#      whole argument - a resumed/background session runs as
-#      `claude --resume <session-id>`. Only a process whose command word is
-#      itself a known harness binary qualifies, so a bystander that merely
+#      session id (CLAUDE_CODE_SESSION_ID, exported into every tool shell) in
+#      its args at a token or path boundary - a resumed/background session runs
+#      as `claude --resume <session-id>` or, under a versioned install, as
+#      `.../claude/versions/<v> --resume .../projects/<slug>/<session-id>.jsonl`.
+#      Only a process whose command word names a known harness binary (as its
+#      basename or as a path component) qualifies, so a bystander that merely
 #      references the session id (a transcript-path tail, a log watcher) can
-#      never become the holder. That process IS the session, so its liveness
-#      tracks the session exactly; zero or ambiguous (non-unique) matches are
-#      refused rather than guessed.
+#      never become the holder. A match that is an ancestor of another match is
+#      that match's launcher (the pty-host daemon's own argv embeds the harness
+#      command it spawns), not the session, and is filtered out. The surviving
+#      process IS the session, so its liveness tracks the session exactly; zero
+#      or ambiguous (non-unique) survivors are refused rather than guessed.
 #
 # Liveness is zombie-aware. kill -0 succeeds on a defunct (zombie) process whose
 # PID still lingers in the process table, and ps preserves its harness command
@@ -66,7 +70,9 @@ harness_pid() {
 harness_like() {
   local pid=$1 comm
   comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
-  printf '%s' "$(basename "$comm") $(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
+  # comm and args on separate lines so the anchored ^pi$ alternative can match
+  # the bare command name; grep matches per line, the rest are unanchored.
+  printf '%s\n%s' "$(basename "$comm")" "$(ps -o args= -p "$pid" 2>/dev/null)" | grep -qE "$HARNESS_RE"
 }
 
 holder_alive() {  # true if $1 is a live (non-defunct) process that looks like a harness
@@ -82,27 +88,54 @@ holder_alive() {  # true if $1 is a live (non-defunct) process that looks like a
 # session_harness_pid: fallback identity when the harness is not in our ancestry
 # (a background/chat session behind a pty-host daemon). Locate the one live
 # harness process carrying this session id in its args. A candidate must be a
-# genuine harness: its command word (first argv token basename) must be a known
-# harness binary, and the session id must appear as a whole argument (bare or
-# --flag=<sid>), never as a substring of a longer token such as a transcript
-# path. Zero or multiple candidates fail the resolution rather than guess.
+# genuine harness: its command word (first argv token) must name a known harness
+# binary as its basename or as a path component (a versioned install runs as
+# .../claude/versions/<v>), and the session id must sit at token or [/._=-]
+# boundaries - a bare argument, --flag=<sid>, or embedded in a transcript path
+# such as --resume .../projects/<slug>/<sid>.jsonl - never as an arbitrary
+# substring of a longer token. A candidate that is an ancestor of another
+# candidate is that candidate's launcher (a pty-host daemon's argv embeds the
+# harness command it spawns, session id and all), not the session: only the
+# descendant survives. Zero or multiple survivors fail the resolution rather
+# than guess.
 session_harness_pid() {
-  local sid=${CLAUDE_CODE_SESSION_ID:-} p args word match=""
+  local sid=${CLAUDE_CODE_SESSION_ID:-} p args word o anc hops match=""
+  local -a cands=() launchers=()
   [ -n "$sid" ] || return 1
   while read -r p args; do
     [ -n "$p" ] || continue
     case " $args " in
-      *" $sid "*|*"=$sid "*) : ;;
+      *[[:space:]/._=-]"$sid"[[:space:]/._=-]*) : ;;
       *) continue ;;
     esac
     word=${args%% *}
-    case "${word##*/}" in claude|codex|opencode|pi) : ;; *) continue ;; esac
+    case "/$word/" in
+      */claude/*|*/codex/*|*/opencode/*|*/pi/*) : ;;
+      *) continue ;;
+    esac
     holder_alive "$p" || continue
+    cands+=("$p")
+  done < <(ps -eo pid=,args= 2>/dev/null)
+  if [ "${#cands[@]}" -gt 1 ]; then
+    for o in "${cands[@]}"; do
+      anc=$(ps -o ppid= -p "$o" 2>/dev/null | tr -d ' ')
+      hops=0
+      while [ -n "$anc" ] && [ "$anc" -gt 1 ] && [ "$hops" -lt 8 ]; do
+        for p in "${cands[@]}"; do
+          [ "$p" = "$anc" ] && launchers+=("$anc")
+        done
+        anc=$(ps -o ppid= -p "$anc" 2>/dev/null | tr -d ' ')
+        hops=$((hops + 1))
+      done
+    done
+  fi
+  for p in "${cands[@]}"; do
+    case " ${launchers[*]-} " in *" $p "*) continue ;; esac
     if [ -n "$match" ] && [ "$match" != "$p" ]; then
       return 1
     fi
     match=$p
-  done < <(ps -eo pid=,args= 2>/dev/null)
+  done
   [ -n "$match" ] || return 1
   echo "$match"
 }
